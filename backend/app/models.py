@@ -95,3 +95,12 @@ class IsbnRequest(BaseModel):
 
 class IsbnResponse(BaseModel):
     book: Book | None = None  # None when no catalog knows this ISBN
+
+
+class SearchRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=200)
+    limit: int = Field(default=15, ge=1, le=30)
+
+
+class SearchResponse(BaseModel):
+    books: list[Book]
