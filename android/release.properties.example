@@ -1,0 +1,13 @@
+# Copy to release.properties (same folder) and fill in. release.properties is git-ignored: never commit it.
+# Use forward slashes in paths, even on Windows.
+
+# Upload key for Google Play (create it once; see docs/RELEASE.md). Keep the .jks and passwords backed up.
+storeFile=D:/keys/shelfscan-upload.jks
+storePassword=
+keyAlias=shelfscan-upload
+keyPassword=
+
+# The ShelfScan server the released app talks to. Must be HTTPS and end with a slash.
+serverUrl=https://shelfscan.example.com/
+# Must match APP_TOKEN on that server (leave empty only if the server has none).
+appToken=
