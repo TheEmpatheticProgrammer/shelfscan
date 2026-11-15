@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -6,8 +8,30 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// Debug builds: server address and token from gradle.properties (a computer on the same Wi-Fi).
 val serverUrl = (project.findProperty("shelfscan.serverUrl") as String?) ?: "http://10.0.2.2:8000/"
 val appToken = (project.findProperty("shelfscan.appToken") as String?) ?: ""
+
+// Release builds: everything secret or deployment-specific comes from android/release.properties,
+// which is git-ignored. See release.properties.example and docs/RELEASE.md.
+val releaseProps = Properties().apply {
+    val file = rootProject.file("release.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+fun releaseProp(name: String): String? = releaseProps.getProperty(name)?.trim()?.takeIf { it.isNotEmpty() }
+val releaseServerUrl = releaseProp("serverUrl")
+val releaseProblems: List<String> = buildList {
+    if (releaseProp("storeFile") == null) add("storeFile: the path to your upload key (.jks) is missing")
+    else if (!rootProject.file(releaseProp("storeFile")!!).exists()) add("storeFile: ${releaseProp("storeFile")} doesn't exist")
+    if (releaseProp("storePassword") == null) add("storePassword is missing")
+    if (releaseProp("keyAlias") == null) add("keyAlias is missing")
+    if (releaseProp("keyPassword") == null) add("keyPassword is missing")
+    when {
+        releaseServerUrl == null -> add("serverUrl is missing")
+        !releaseServerUrl.startsWith("https://") -> add("serverUrl must start with https:// (release builds refuse plain HTTP)")
+        !releaseServerUrl.endsWith("/") -> add("serverUrl must end with /")
+    }
+}
 
 android {
     namespace = "com.shelfscan.app"
@@ -17,10 +41,20 @@ android {
         applicationId = "com.shelfscan.app"
         minSdk = 26
         targetSdk = 35
+        // Bump versionCode by 1 for every upload to Google Play (it must always increase).
         versionCode = 1
         versionName = "0.1.0"
         buildConfigField("String", "SERVER_URL", "\"$serverUrl\"")
         buildConfigField("String", "APP_TOKEN", "\"$appToken\"")
+    }
+
+    signingConfigs {
+        create("release") {
+            releaseProp("storeFile")?.let { storeFile = rootProject.file(it) }
+            storePassword = releaseProp("storePassword")
+            keyAlias = releaseProp("keyAlias")
+            keyPassword = releaseProp("keyPassword")
+        }
     }
 
     buildTypes {
@@ -29,8 +63,12 @@ android {
         }
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             manifestPlaceholders["cleartext"] = "false"
+            if (releaseProblems.isEmpty()) signingConfig = signingConfigs.getByName("release")
+            buildConfigField("String", "SERVER_URL", "\"${releaseServerUrl ?: "https://invalid.example/"}\"")
+            buildConfigField("String", "APP_TOKEN", "\"${releaseProp("appToken").orEmpty()}\"")
         }
     }
     compileOptions {
@@ -77,3 +115,17 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
 }
+
+// A release that isn't signed or can't reach an HTTPS server would install and then fail, so refuse to
+// build one. Debug builds are unaffected.
+val checkReleaseConfig = tasks.register("checkReleaseConfig") {
+    doLast {
+        if (releaseProblems.isNotEmpty()) {
+            throw GradleException(
+                "android/release.properties isn't ready for a release build:\n - " +
+                    releaseProblems.joinToString("\n - ") + "\nSee docs/RELEASE.md."
+            )
+        }
+    }
+}
+tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }.configureEach { dependsOn(checkReleaseConfig) }

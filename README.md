@@ -127,6 +127,13 @@ Then `REDIS_URL=redis://localhost:6379/0` before starting the backend. Don't exp
 
 Set `APP_TOKEN` on the server and `shelfscan.appToken` in the app to require an `X-App-Token` header. That keeps casual traffic off your API key; for a public release, replace it with real auth and rate limiting.
 
+## Releasing
+
+Signed builds for Google Play's internal testing track: see [docs/RELEASE.md](docs/RELEASE.md). Release builds read
+the upload key and the HTTPS server address from `android/release.properties` (git-ignored; start from
+`android/release.properties.example`) and refuse to build without them. Store art, listing text and a draft privacy
+policy are in `docs/`.
+
 ## Known limits and next steps
 
 - Google Books' future-release coverage is decent for major publishers and spotty for small presses. Adding Open Library or a publisher feed would widen it.
