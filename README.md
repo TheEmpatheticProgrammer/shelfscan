@@ -65,7 +65,10 @@ Downloads), and imports one back, adding only what's missing. Use it to move to 
 **Book page.** Unread / Reading / Read, a large cover (tap *Change cover* to pick another edition's artwork), a 2–3 sentence spoiler-free synopsis with the full description one tap away, and a
 *Similar books* row. The synopsis is condensed from the publisher's (or Open Library's) description, so the model never
 invents a plot; short descriptions are shown as they are, and if the model fails the description's opening is used.
-It is saved on the device, so the page is instant from the second visit. *More by {author}* opens Discover on that author.
+It is saved on the device. A background job (WorkManager, one book at a time, retried if the server is down) fetches
+the synopsis and large cover for newly added books, and their similar books, right after they're added, so a book page
+is usually complete the first time it's opened. Similar books are kept on the phone for a week; an older copy is shown
+instantly while a fresh one loads. *More by {author}* opens Discover on that author.
 
 **Discover.**
 - *For you*: chips for **All**, your top genres and your most-owned authors. An author shows *More by {author}*

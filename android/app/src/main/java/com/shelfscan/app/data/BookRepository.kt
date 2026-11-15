@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
 import okhttp3.MediaType.Companion.toMediaType
@@ -48,7 +50,6 @@ class BookRepository(
     val wishlistKeys: Flow<Set<String>> = wishlist.map { items -> items.map { it.matchKey }.toSet() }
 
     private val prefs = context.getSharedPreferences("shelfscan", Context.MODE_PRIVATE)
-    private val similarCache = mutableMapOf<String, List<RecommendationDto>>()
     private val coverUpgrade = Mutex()
 
     fun book(id: Long): Flow<Book?> = dao.observe(id)
@@ -112,6 +113,7 @@ class BookRepository(
     suspend fun add(books: List<BookDto>): Int {
         val added = dao.insertAll(books.map { it.toEntity() }).count { it != -1L }
         wishlistDao.deleteByKeys(books.map { it.matchKey })
+        if (added > 0) prefetchDetails() // get their pages ready before anyone opens them
         return added
     }
 
@@ -144,6 +146,7 @@ class BookRepository(
     suspend fun moveToLibrary(item: WishlistItem) {
         dao.insert(item.toBook())
         wishlistDao.deleteByKeys(listOf(item.matchKey))
+        prefetchDetails()
     }
 
     // --- Covers ---
@@ -201,6 +204,7 @@ class BookRepository(
         val owned = dao.allKeys().toSet()
         val wishes = export.wantToRead.filter { it.title.isNotBlank() }.map { it.toWishlistItem() }.filter { it.matchKey !in owned }
         val addedWishes = wishlistDao.insertAll(wishes).count { it != -1L }
+        if (addedBooks > 0) prefetchDetails()
         ImportResult(addedBooks, addedWishes, skipped = export.books.size + export.wantToRead.size - addedBooks - addedWishes)
     }
 
@@ -218,37 +222,98 @@ class BookRepository(
      * Fills in the book page: a large cover, the description and a short synopsis. Asks the server only
      * while the synopsis is missing, then keeps the answer, so a book page is instant from the second visit.
      */
-    suspend fun loadDetails(book: Book) {
-        if (book.synopsis != null) return
-        val d = api.bookDetails(DetailsRequest(book.title, book.author, book.isbn, book.description))
+    suspend fun loadDetails(book: Book) = lockFor("details:${book.id}").withLock {
+        // Re-read under the lock: the background prefetch may have just filled it in.
+        val current = dao.byId(book.id) ?: return@withLock
+        if (current.synopsis != null) return@withLock
+        val d = api.bookDetails(DetailsRequest(current.title, current.author, current.isbn, current.description))
         dao.update(
-            book.copy(
-                coverUrl = d.coverUrl ?: book.coverUrl,
-                isbn = book.isbn ?: d.isbn,
-                description = book.description ?: d.description,
+            current.copy(
+                coverUrl = d.coverUrl ?: current.coverUrl,
+                isbn = current.isbn ?: d.isbn,
+                description = current.description ?: d.description,
                 // An empty synopsis marks "looked, nothing to summarize" so it isn't asked for again.
                 synopsis = d.synopsis ?: "",
-                publishedDate = book.publishedDate ?: d.publishedDate,
-                pageCount = book.pageCount ?: d.pageCount,
+                publishedDate = current.publishedDate ?: d.publishedDate,
+                pageCount = current.pageCount ?: d.pageCount,
             )
         )
     }
 
-    /** "Similar books" for a book page, remembered for this session. */
-    suspend fun similarTo(book: Book): Fetched<List<RecommendationDto>> {
-        similarCache[book.matchKey]?.let { return Fetched(it) }
-        val owned = dao.all()
-        val shelf = owned.sortedByDescending { it.author == book.author }.take(150)
-        return withOfflineCopy("similar:${book.matchKey}", RECS) {
-            api.recommendations(
-                RecommendRequest(
-                    books = shelf.map { OwnedBookDto(it.title, it.author, it.genres) } + wantToReadForServer(),
-                    limit = 8,
-                    similarTo = OwnedBookDto(book.title, book.author, book.genres),
-                )
-            ).recommendations
-        }.also { if (!it.isOffline) similarCache[book.matchKey] = it.data }
+    // --- Background prefetch of book pages ---
+
+    /** Ask the background job to get book pages ready (synopsis, large cover, similar books). */
+    fun prefetchDetails(afterAdding: Boolean = true) = DetailsPrefetchWorker.schedule(context, afterAdding)
+
+    /**
+     * One pass of the background prefetch. Returns false if the server couldn't be reached, so the job
+     * tries again later; a book the server can't do anything with is skipped rather than retried forever.
+     */
+    suspend fun prefetchPendingDetails(): Boolean {
+        // 1. Synopsis and cover for every book never looked up, newest first. Cheap for books with short
+        //    descriptions (no model call), so this also quietly backfills the existing library.
+        while (true) {
+            val next = dao.missingDetails(limit = 1).firstOrNull() ?: break
+            when (attempt { loadDetails(next) }) {
+                Attempt.Ok -> Unit
+                Attempt.Unreachable -> return false
+                Attempt.Unusable -> dao.update(next.copy(synopsis = "")) // nothing to fetch: don't ask again
+            }
+        }
+        // 2. Similar books for recently added books. Each is a model call, so only recent ones.
+        for (book in dao.addedSince(System.currentTimeMillis() - SIMILAR_PREFETCH_WINDOW_MS)) {
+            if (cachedSimilar(book)?.let { isFresh(it.savedAt) } == true) continue
+            if (attempt { similarTo(book, refresh = true) } == Attempt.Unreachable) return false
+        }
+        return true
     }
+
+    private enum class Attempt { Ok, Unreachable, Unusable }
+
+    /** Unreachable = worth retrying later (no connection, timeout, server error); Unusable = won't get better. */
+    private suspend fun attempt(block: suspend () -> Unit): Attempt = try {
+        block()
+        Attempt.Ok
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: IOException) {
+        Attempt.Unreachable
+    } catch (e: HttpException) {
+        if (e.code() >= 500 || e.code() == 401) Attempt.Unreachable else Attempt.Unusable
+    } catch (e: Exception) {
+        Attempt.Unusable
+    }
+
+    /** "Similar books" for a book page, remembered for this session. */
+    /** The similar books kept on the phone for this book, however old (null if never fetched). */
+    suspend fun cachedSimilar(book: Book): Saved<List<RecommendationDto>>? = offline.load(similarKey(book), RECS)
+
+    fun isFresh(savedAt: Long) = System.currentTimeMillis() - savedAt < SIMILAR_TTL_MS
+
+    /**
+     * "Similar books" for a book page. Served from the phone when there's a copy less than a week old
+     * (usually because the background prefetch got it); otherwise asked of the server and kept.
+     */
+    suspend fun similarTo(book: Book, refresh: Boolean = false): Fetched<List<RecommendationDto>> =
+        lockFor(similarKey(book)).withLock {
+            if (!refresh) cachedSimilar(book)?.takeIf { isFresh(it.savedAt) }?.let { return@withLock Fetched(it.data) }
+            val shelf = dao.all().sortedByDescending { it.author == book.author }.take(150)
+            withOfflineCopy(similarKey(book), RECS) {
+                api.recommendations(
+                    RecommendRequest(
+                        books = shelf.map { OwnedBookDto(it.title, it.author, it.genres) } + wantToReadForServer(),
+                        limit = 8,
+                        similarTo = OwnedBookDto(book.title, book.author, book.genres),
+                    )
+                ).recommendations
+            }
+        }
+
+    private fun similarKey(book: Book) = "similar:${book.matchKey}"
+
+    /** One lock per book and job, so the page and the background prefetch never fetch the same thing twice. */
+    private val locks = ConcurrentHashMap<String, Mutex>()
+    private fun lockFor(key: String): Mutex = locks.getOrPut(key) { Mutex() }
 
     /**
      * One-time pass that swaps the small covers of books scanned before Open Library covers existed
@@ -293,6 +358,8 @@ class BookRepository(
     private companion object {
         const val COVERS_V2 = "covers_v2_done"
         const val COVER_RETRY_MS = 3L * 24 * 60 * 60 * 1000 // look again after three days
+        const val SIMILAR_TTL_MS = 7L * 24 * 60 * 60 * 1000 // similar books are reused for a week
+        const val SIMILAR_PREFETCH_WINDOW_MS = 14L * 24 * 60 * 60 * 1000 // prefetch them for books added in 2 weeks
         val RECS = ListSerializer(RecommendationDto.serializer())
     }
 

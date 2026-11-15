@@ -99,6 +99,8 @@ class LibraryViewModel(private val repo: BookRepository, initialQuery: String = 
             runCatching { repo.upgradeCoversOnce() }
             runCatching { repo.retryMissingCovers() }
         }
+        // Get book pages ready for anything not yet prefetched (also backfills books added before this existed).
+        repo.prefetchDetails(afterAdding = false)
         viewModelScope.launch {
             // Opening the app is a good moment to send any scans saved while offline.
             repo.refreshPending()

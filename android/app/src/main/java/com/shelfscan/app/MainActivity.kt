@@ -99,7 +99,7 @@ private fun ShelfScanNav() {
             composable(Routes.SCAN) {
                 ScanScreen(
                     onBack = { nav.popBackStack() },
-                    onFinished = { nav.switchTab(Routes.library()) },
+                    onFinished = { nav.backToLibrary() },
                     onSearch = { nav.navigate(Routes.SEARCH) },
                 )
             }
@@ -126,6 +126,15 @@ private fun ShelfScanNav() {
             }
         }
     }
+}
+
+/**
+ * Leave a flow (Add books) for the library. The Library is the first screen, so it's always underneath:
+ * going back to it is reliable, whereas "navigating to" the first screen with the tab bar's save/restore
+ * options can hand back the screen being left, which is why View library seemed to do nothing.
+ */
+private fun NavHostController.backToLibrary() {
+    if (!popBackStack(Routes.LIBRARY, inclusive = false)) switchTab(Routes.library())
 }
 
 private fun NavHostController.switchTab(route: String) = navigate(route) {
