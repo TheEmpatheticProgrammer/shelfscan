@@ -12,6 +12,8 @@ from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, Upl
 from pydantic import ValidationError
 
 from .cache import TTL_S, Cache, NullCache, SingleFlight, create_cache, recommendations_key
+from .guard import suspicious_reason
+from .identity import merge_duplicates
 from .catalog import Catalog, _authors_match, _titles_match, _volume_to_book
 from .llm import LLM, PROVIDER, RECOMMEND_PROMPT_VERSION, TEXT_MODEL, create_llm
 from .models import (
@@ -40,6 +42,9 @@ MAX_IMAGES = 6
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp"}
 APP_TOKEN = os.getenv("APP_TOKEN")  # optional shared secret the app sends as X-App-Token
+# What to do with a book the model read but the catalog has never heard of (a likely misread or invention):
+# "drop" leaves it out and says so in `notes`; "keep" returns it anyway.
+UNVERIFIED_POLICY = os.getenv("IDENTIFY_UNVERIFIED", "drop").strip().lower()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("shelfscan")
@@ -110,14 +115,42 @@ async def identify(images: list[UploadFile] = File(...)):
         len(books), len(payload),
         "; ".join(f"{b.title} / {b.author} ({b.confidence:.2f})" for b in books) or "none", notes,
     )
-    enriched = await state.catalog.enrich_all(books)
-    seen, unique = set(), []
-    for b in enriched:
-        k = _key(b.title, b.author)
-        if k not in seen:
-            seen.add(k)
-            unique.append(b)
+    # Guardrails: a read only counts if it passes sanity checks AND the catalog knows the book.
+    rejected: list[str] = []
+    candidates = []
+    for b in books:
+        if (why := suspicious_reason(b.title, b.author)):
+            log.info("rejected %r by %r: %s", b.title, b.author, why)
+            rejected.append(b.title)
+        else:
+            candidates.append(b)
+    # One entry per book however many photos or spellings it came from: merge before the lookups (saves
+    # queries) and again after them (snapping a misread title can make two reads identical).
+    checked = await state.catalog.check_all(merge_duplicates(candidates))
+    kept: list[Book] = []
+    unchecked = 0
+    for b, status in checked:
+        if status == "unverified":
+            if UNVERIFIED_POLICY != "keep":
+                rejected.append(b.title)
+                continue
+            b = await state.catalog.with_best_cover(b)
+        unchecked += status == "unchecked"
+        kept.append(b)
+    unique = merge_duplicates(kept)
+    notes = _with_guard_notes(notes, rejected, unchecked)
+    log.info("kept %d of %d read; left out: %s", len(unique), len(books), "; ".join(rejected) or "none")
     return IdentifyResponse(books=unique, notes=notes)
+
+
+def _with_guard_notes(notes: str | None, rejected: list[str], unchecked: int) -> str | None:
+    parts = [notes] if notes else []
+    if rejected:
+        shown = ", ".join(f'"{t}"' for t in rejected[:5]) + (f" and {len(rejected) - 5} more" if len(rejected) > 5 else "")
+        parts.append(f"Left out {len(rejected)} spine(s) I couldn't confirm as real books: {shown}. Retake the photo closer to add them.")
+    if unchecked:
+        parts.append(f"{unchecked} book(s) couldn't be checked against the book catalog right now, so they may contain mistakes.")
+    return " ".join(parts) or None
 
 
 @app.post("/recommendations", response_model=RecommendResponse, dependencies=[Depends(check_token)])

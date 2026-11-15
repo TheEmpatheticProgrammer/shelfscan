@@ -61,7 +61,8 @@ def client():
             yield c
 
 
-def test_identify_enriches_and_dedupes(client):
+def test_identify_enriches_and_dedupes(client, monkeypatch):
+    monkeypatch.setattr(main, "UNVERIFIED_POLICY", "keep")
     r = client.post("/identify", files=[("images", ("a.jpg", b"\xff\xd8fake", "image/jpeg"))])
     assert r.status_code == 200, r.text
     body = r.json()
@@ -89,6 +90,7 @@ def test_match_rules():
 
 
 def test_wrong_catalog_hit_does_not_overwrite(client, monkeypatch):
+    monkeypatch.setattr(main, "UNVERIFIED_POLICY", "keep")
     # Claude read "Dune Messiah"; the catalog only knows "Dune". Keep what Claude read.
     async def one(self, images):
         return [Book(title="Dune Messiah", author="Frank Herbert", genres=["Science Fiction"])], None
@@ -96,6 +98,62 @@ def test_wrong_catalog_hit_does_not_overwrite(client, monkeypatch):
     r = client.post("/identify", files=[("images", ("a.jpg", b"\xff\xd8", "image/jpeg"))])
     b = r.json()["books"][0]
     assert b["title"] == "Dune Messiah" and b["isbn"] is None
+
+
+def test_identify_drops_books_the_catalog_has_never_heard_of(client):
+    r = client.post("/identify", files=[("images", ("a.jpg", b"\xff\xd8", "image/jpeg"))])
+    body = r.json()
+    assert [b["title"] for b in body["books"]] == ["Dune"]  # "Mystery Book" by Nobody is not a real book
+    assert "Mystery Book" in body["notes"] and "One spine was blurry" in body["notes"]
+
+
+def test_identify_rejects_a_title_that_is_the_authors_surname(client, monkeypatch):
+    async def one(self, images):
+        return [Book(title="Brown", author="Dan Brown"), Book(title="Dune", author="Frank Herbert")], None
+    monkeypatch.setattr(FakeLLM, "identify", one)
+    body = client.post("/identify", files=[("images", ("a.jpg", b"\xff\xd8", "image/jpeg"))]).json()
+    assert [b["title"] for b in body["books"]] == ["Dune"]
+    assert '"Brown"' in body["notes"]
+
+
+def test_identify_keeps_books_when_the_catalog_is_down(client, monkeypatch):
+    # Can't verify is not the same as wrong: keep the read, and say it wasn't checked.
+    async def down(self, q, **params):
+        return None
+    monkeypatch.setattr(main.Catalog, "_search", down)
+    body = client.post("/identify", files=[("images", ("a.jpg", b"\xff\xd8", "image/jpeg"))]).json()
+    assert [b["title"] for b in body["books"]] == ["Dune", "Mystery Book"]
+    assert "couldn't be checked" in body["notes"]
+
+
+def test_identify_snaps_a_misread_title_to_the_catalogs(client, monkeypatch):
+    async def one(self, images):
+        return [Book(title="Shadow of Wars", author="Christie Golden")], None
+    monkeypatch.setattr(FakeLLM, "identify", one)
+
+    async def search(self, q, **params):
+        return [gb("StarCraft: Shadow Wars", ["Christie Golden"], date="2010-01-01")] if "Shadow" in q else []
+    monkeypatch.setattr(main.Catalog, "_search", search)
+    body = client.post("/identify", files=[("images", ("a.jpg", b"\xff\xd8", "image/jpeg"))]).json()
+    assert [b["title"] for b in body["books"]] == ["Shadow Wars"]
+
+
+def test_identify_returns_each_book_once(client, monkeypatch):
+    async def many(self, images):
+        return [
+            Book(title="Dune", author="Frank Herbert"), Book(title="DUNE", author="Unknown"),
+            Book(title="Dune", author="F. Herbert", confidence=0.4), Book(title="Hyperion", author="Dan Simmons"),
+            Book(title="Hyperion", author="Dan Simmons"),
+        ], None
+    monkeypatch.setattr(FakeLLM, "identify", many)
+
+    async def search(self, q, **params):  # a catalog where every book has its own ISBN
+        item = gb("Dune", ["Frank Herbert"]) if "Dune" in q or "DUNE" in q else gb("Hyperion", ["Dan Simmons"])
+        item["volumeInfo"]["industryIdentifiers"][0]["identifier"] = "1" if "Dune" in item["volumeInfo"]["title"] else "2"
+        return [item]
+    monkeypatch.setattr(main.Catalog, "_search", search)
+    body = client.post("/identify", files=[("images", ("a.jpg", b"\xff\xd8", "image/jpeg"))]).json()
+    assert sorted(b["title"] for b in body["books"]) == ["Dune", "Hyperion"]
 
 
 def test_identify_rejects_bad_type(client):

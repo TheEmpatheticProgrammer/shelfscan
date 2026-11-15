@@ -112,6 +112,28 @@ Run Redis on Windows (pick one, and keep the data and installs on D:):
 
 Then `REDIS_URL=redis://localhost:6379/0` before starting the backend. Don't expose port 6379 beyond this PC.
 
+## Guardrails against made-up books
+
+A small vision model will sometimes "read" a book that isn't on the shelf, or report an author's name as a
+title. `/identify` therefore only returns a book when it passes two checks:
+
+1. **Sanity rules** (`app/guard.py`): no empty or placeholder titles, and a title that is just the author's
+   name or surname ("Brown" by Dan Brown) is rejected without a lookup.
+2. **Catalog check**: Google Books must have a record with the same title and author. No record means the
+   read is probably wrong, so the book is left out and `notes` says which spines were skipped.
+
+If Google Books can't be reached the books are kept as read and `notes` says they weren't checked, because
+"couldn't verify" isn't "wrong". Set `IDENTIFY_UNVERIFIED=keep` to return unmatched books anyway (the old
+behaviour). Trade-off: self-published or very obscure books the catalog lacks are skipped, so use `keep` if
+your shelf is full of them.
+
+**Near-misses and duplicates** (`app/identity.py`): if the exact title isn't in the catalog but one by the
+same author is almost identical ("Shadow of Wars" vs "StarCraft: Shadow Wars"), the book is corrected to the
+catalog's title instead of being dropped. Numbers must match exactly, so "Book 2" never becomes "Book 1".
+Each book is then returned once: reads are merged when they share an ISBN, or have the same title (a
+subtitle or series prefix doesn't matter) and a compatible author ("C. Golden", "Golden, Christie" and
+"Unknown" all fit "Christie Golden"). Merging is idempotent, so running it again changes nothing.
+
 ## API
 
 | Endpoint | Body | Returns |
