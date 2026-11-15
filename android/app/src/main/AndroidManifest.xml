@@ -23,7 +23,8 @@
             </intent-filter>
         </activity>
 
-        <!-- Download the barcode scanner module at install time, so the first scan doesn't wait for it. -->
+        <!-- Play Store installs download the barcode scanner module at install time. Other installs (Android
+             Studio) get it on demand through ModuleInstall in BookBarcodeScanner. -->
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
             android:value="barcode_ui" />
