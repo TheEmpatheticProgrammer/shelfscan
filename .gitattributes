@@ -1,0 +1,13 @@
+# Line endings: LF in the repo and in every checkout (Android Studio, VS Code and Python are all fine with it),
+# so files touched on Windows don't show up as changed just because of CRLF. Windows scripts keep CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files: never touch them.
+*.png binary
+*.jpg binary
+*.jar binary
+*.jks binary
+*.keystore binary
