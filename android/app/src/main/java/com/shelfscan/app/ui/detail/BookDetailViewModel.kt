@@ -103,7 +103,7 @@ class BookDetailViewModel(private val repo: BookRepository, bookId: Long) : View
     private suspend fun loadSimilar(b: Book) {
         _extras.update { it.copy(similarState = Part.Loading) }
         try {
-            val recs = repo.similarTo(b)
+            val recs = repo.similarTo(b).data // a saved copy is fine here; no need to flag it on the book page
             _extras.update { it.copy(similar = recs, similarState = Part.Ready) }
         } catch (e: CancellationException) {
             throw e

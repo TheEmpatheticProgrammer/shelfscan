@@ -7,12 +7,18 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.shelfscan.app.data.AppDatabase
 import com.shelfscan.app.data.BookRepository
+import com.shelfscan.app.data.OfflineStore
+import com.shelfscan.app.data.PendingScanStore
 import com.shelfscan.app.data.remote.ShelfApi
 
 class ShelfScanApp : Application(), ImageLoaderFactory {
     val repository: BookRepository by lazy {
         val db = AppDatabase.create(this)
-        BookRepository(this, db.books(), db.wishlist(), ShelfApi.create())
+        BookRepository(
+            this, db.books(), db.wishlist(), ShelfApi.create(),
+            offline = OfflineStore(filesDir.resolve("offline")),
+            pendingStore = PendingScanStore(filesDir.resolve("pending")),
+        )
     }
 
     /**

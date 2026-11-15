@@ -46,6 +46,15 @@ interface BookDao {
     @Query("UPDATE books SET readingStatus = :status WHERE id = :id")
     suspend fun setStatus(id: Long, status: String)
 
+    @Query("UPDATE books SET readingStatus = :status WHERE id IN (:ids)")
+    suspend fun setStatusMany(ids: List<Long>, status: String)
+
+    @Query("SELECT * FROM books WHERE id IN (:ids)")
+    suspend fun byIds(ids: List<Long>): List<Book>
+
+    @Query("DELETE FROM books WHERE id IN (:ids)")
+    suspend fun deleteMany(ids: List<Long>)
+
     @Query("UPDATE books SET coverUrl = :url, coverCheckedAt = :checkedAt WHERE id = :id")
     suspend fun setCover(id: Long, url: String?, checkedAt: Long)
 

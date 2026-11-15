@@ -8,14 +8,17 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.shelfscan.app.ShelfScanApp
 import com.shelfscan.app.data.BookRepository
+import com.shelfscan.app.data.PendingScan
 import com.shelfscan.app.data.matchKey
 import com.shelfscan.app.data.remote.BookDto
 import com.shelfscan.app.util.friendlyMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.io.IOException
 
 const val MAX_PHOTOS = 6
 private const val LOW_CONFIDENCE = 0.6
@@ -33,6 +36,7 @@ sealed interface ScanStep {
     data object Pick : ScanStep
     data object Identifying : ScanStep
     data object LookingUp : ScanStep // a scanned barcode's ISBN
+    data class Queued(val photoCount: Int) : ScanStep // server unreachable: saved for later
     data class Review(val candidates: List<Candidate>, val notes: String?) : ScanStep
     data class Done(val added: Int) : ScanStep
 }
@@ -41,6 +45,8 @@ data class ScanState(
     val photos: List<Uri> = emptyList(),
     val step: ScanStep = ScanStep.Pick,
     val error: String? = null,
+    /** Set while reviewing a scan from the offline queue, so it's removed once saved. */
+    val reviewingPendingId: String? = null,
 )
 
 class ScanViewModel(private val repo: BookRepository) : ViewModel() {
@@ -55,22 +61,56 @@ class ScanViewModel(private val repo: BookRepository) : ViewModel() {
 
     fun dismissError() = _state.update { it.copy(error = null) }
 
+    /** Scans saved while offline: ready ones can be reviewed here. */
+    val pending: StateFlow<List<PendingScan>> = repo.pendingScans
+
+    init {
+        // Opening Add books is a good moment to try the queue again, rather than waiting for the worker's backoff.
+        viewModelScope.launch {
+            repo.refreshPending()
+            if (repo.pendingScans.value.any { it.state == PendingScan.QUEUED }) runCatching { repo.processPendingScans() }
+        }
+    }
+
     fun identify() {
         val photos = _state.value.photos
         if (photos.isEmpty()) return
         _state.update { it.copy(step = ScanStep.Identifying, error = null) }
         viewModelScope.launch {
-            runCatching { repo.identify(photos) to repo.ownedKeys() }
-                .onSuccess { (result, owned) ->
-                    val (books, notes) = result
-                    val candidates = books.mapIndexed { i, b ->
-                        val isOwned = b.matchKey in owned
-                        Candidate(i, b, selected = !isOwned && b.confidence >= LOW_CONFIDENCE, alreadyOwned = isOwned)
-                    }
-                    _state.update { it.copy(step = ScanStep.Review(candidates, notes)) }
-                }
-                .onFailure { e -> _state.update { it.copy(step = ScanStep.Pick, error = e.friendlyMessage()) } }
+            val bytes = try {
+                repo.preparePhotos(photos)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(step = ScanStep.Pick, error = "Couldn't read those photos. Try taking them again.") }
+                return@launch
+            }
+            try {
+                val (books, notes) = repo.identify(bytes)
+                showReview(books, notes, pendingId = null)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                // Can't reach the server (or it timed out): keep the photos and read them later instead of failing.
+                repo.queueScan(bytes)
+                _state.update { ScanState(step = ScanStep.Queued(bytes.size)) }
+            } catch (e: Exception) {
+                _state.update { it.copy(step = ScanStep.Pick, error = e.friendlyMessage()) }
+            }
         }
+    }
+
+    fun reviewPending(scan: PendingScan) = viewModelScope.launch { showReview(scan.books, scan.notes, pendingId = scan.id) }
+
+    fun discardPending(scan: PendingScan) = viewModelScope.launch { repo.discardPending(scan.id) }
+
+    private suspend fun showReview(books: List<BookDto>, notes: String?, pendingId: String?) {
+        val owned = repo.ownedKeys()
+        val candidates = books.mapIndexed { i, b ->
+            val isOwned = b.matchKey in owned
+            Candidate(i, b, selected = !isOwned && b.confidence >= LOW_CONFIDENCE, alreadyOwned = isOwned)
+        }
+        _state.update { it.copy(step = ScanStep.Review(candidates, notes), reviewingPendingId = pendingId) }
     }
 
     /** A barcode was scanned: find the book and show it for review, like a one-book photo scan. */
@@ -122,7 +162,8 @@ class ScanViewModel(private val repo: BookRepository) : ViewModel() {
         val chosen = review.candidates.filter { it.selected }.map { it.book }
         viewModelScope.launch {
             val added = repo.add(chosen)
-            _state.update { it.copy(step = ScanStep.Done(added)) }
+            _state.value.reviewingPendingId?.let { repo.discardPending(it) } // reviewed: done with it
+            _state.update { it.copy(step = ScanStep.Done(added), reviewingPendingId = null) }
         }
     }
 

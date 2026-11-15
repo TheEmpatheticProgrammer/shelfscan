@@ -49,6 +49,9 @@ data class DiscoverState(
     val focus: Focus = Focus.All,
     val forYou: Load<List<RecommendationDto>> = Load.Idle,
     val upcoming: Load<List<BookDto>> = Load.Idle,
+    /** Set when the server couldn't be reached and a saved copy is shown: when that copy was received. */
+    val forYouOfflineSince: Long? = null,
+    val upcomingOfflineSince: Long? = null,
 )
 
 class DiscoverViewModel(private val repo: BookRepository) : ViewModel() {
@@ -94,7 +97,7 @@ class DiscoverViewModel(private val repo: BookRepository) : ViewModel() {
             val key = shelfKey() ?: return@launch
             val cached = recsCache[focus]
             if (!force && cached != null && cached.first == key) {
-                _state.update { it.copy(forYou = Load.Ready(cached.second)) }
+                _state.update { it.copy(forYou = Load.Ready(cached.second), forYouOfflineSince = null) }
                 return@launch
             }
             _state.update { it.copy(forYou = Load.Loading) }
@@ -105,9 +108,12 @@ class DiscoverViewModel(private val repo: BookRepository) : ViewModel() {
                     is Focus.Genre -> repo.recommendations(genre = focus.name)
                 }
             }
-                .onSuccess { recs ->
-                    recsCache[focus] = key to recs
-                    _state.update { if (it.focus == focus) it.copy(forYou = Load.Ready(recs)) else it }
+                .onSuccess { fetched ->
+                    // Only fresh answers are reused; an offline copy is shown but retried on the next visit.
+                    if (!fetched.isOffline) recsCache[focus] = key to fetched.data
+                    _state.update {
+                        if (it.focus == focus) it.copy(forYou = Load.Ready(fetched.data), forYouOfflineSince = fetched.offlineSince) else it
+                    }
                 }
                 .onFailure { e ->
                     if (e is kotlinx.coroutines.CancellationException) throw e
@@ -121,7 +127,10 @@ class DiscoverViewModel(private val repo: BookRepository) : ViewModel() {
         if (!force && key == upcomingKey && _state.value.upcoming is Load.Ready) return@launch
         _state.update { it.copy(upcoming = Load.Loading) }
         runCatching { repo.upcoming() }
-            .onSuccess { books -> upcomingKey = key; _state.update { it.copy(upcoming = Load.Ready(books)) } }
+            .onSuccess { fetched ->
+                if (!fetched.isOffline) upcomingKey = key
+                _state.update { it.copy(upcoming = Load.Ready(fetched.data), upcomingOfflineSince = fetched.offlineSince) }
+            }
             .onFailure { e -> _state.update { it.copy(upcoming = Load.Failed(e.friendlyMessage())) } }
     }
 

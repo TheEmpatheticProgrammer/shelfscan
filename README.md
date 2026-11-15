@@ -44,12 +44,20 @@ Debug builds allow plain HTTP for local testing; release builds require HTTPS, s
 
 **Scanning.** Up to 6 photos per batch. The app downscales each to 1600px on the long edge with EXIF rotation applied, then uploads. The backend asks Claude to list every book via a forced tool call (structured JSON with a per-book confidence), then matches each against Google Books for ISBN, cover, description, page count and categories. Unmatched books keep the LLM's data rather than being dropped.
 
-**Barcode.** *Scan a barcode (one book)* uses Google's code scanner (no camera permission). The ISBN is looked up in
-Google Books, then Open Library, and the book goes through the same review step as a photo.
+**One book at a time.** *Barcode* uses Google's code scanner (no camera permission). The ISBN is looked up in
+Google Books, then Open Library, and the book goes through the same review step as a photo. *Type a title* searches as you type
+(Google Books, then Open Library) and adds a result with one tap.
+
+**Offline.** If the server can't be reached when you scan, the photos are kept on the phone and read automatically once
+it's back (WorkManager, retrying with backoff); they then wait under Add books, and a banner in the library, for review.
+Discover and Similar books keep their last results on the phone and show them, marked offline, when the server is down.
 
 **Review.** Low-confidence matches (<0.6) start unchecked and are flagged; books already on your shelf are marked and can't be re-added. Tap the pencil to fix a misread title before saving. Duplicates are also blocked at the database level by a normalized title+author key.
 
 **Library.** Grid view plus Author and Genre shelves (co-authored books appear under each author). Search covers title, author and genre. Tapping a genre chip on a book opens the library filtered to it. Books marked *Reading* get their own row at the top.
+The sort-and-filter button orders books by recently added, title (ignoring "The"/"A") or author (shelved by last name,
+so Le Guin is under L), and shows all books or only Unread / Reading / Read. Long-press a book to select several, then
+mark them as read, reading or unread, or remove them (with Undo).
 
 **Backup.** The ⋮ menu exports the library and the Want to read list to a JSON file you save anywhere (Drive,
 Downloads), and imports one back, adding only what's missing. Use it to move to a new phone.
@@ -111,6 +119,7 @@ Then `REDIS_URL=redis://localhost:6379/0` before starting the backend. Don't exp
 | `POST /covers` | `{books: [{title, author, isbn?}]}` (≤50) | `{covers: [{cover_url, isbn}]}` in request order |
 | `POST /covers/candidates` | `{title, author, isbn?}` | `{candidates: [url]}`, best first |
 | `POST /lookup/isbn` | `{isbn}` | `{book: Book \| null}` |
+| `POST /search` | `{query, limit?}` | `{books: Book[]}`, best match first |
 | `POST /upcoming` | `{authors: string[]}` | `{books: Book[]}` sorted by date |
 
 Set `APP_TOKEN` on the server and `shelfscan.appToken` in the app to require an `X-App-Token` header. That keeps casual traffic off your API key; for a public release, replace it with real auth and rate limiting.

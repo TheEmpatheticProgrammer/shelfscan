@@ -1,5 +1,6 @@
 package com.shelfscan.app.ui.discover
 
+import android.text.format.DateUtils
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,8 +37,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -138,6 +141,7 @@ fun DiscoverScreen(
 
         if (tab == TAB_FOR_YOU) {
             FocusChips(state.focusOptions, state.focus, onSelect = vm::setFocus)
+            OfflineNote(state.forYouOfflineSince, onRetry = { vm.loadForYou(force = true) })
             LoadContent(state.forYou, onRetry = { vm.loadForYou(force = true) }) { recs ->
                 val sections = sectionsFor(state.focus, recs)
                 if (sections.all { it.picks.isEmpty() }) EmptyState(
@@ -151,6 +155,7 @@ fun DiscoverScreen(
                 else PickList(sections, onClick = { selected = it })
             }
         } else {
+            OfflineNote(state.upcomingOfflineSince, onRetry = { vm.loadUpcoming(force = true) })
             LoadContent(state.upcoming, onRetry = { vm.loadUpcoming(force = true) }) { books ->
                 if (books.isEmpty()) EmptyState(
                     icon = Icons.Filled.EventAvailable,
@@ -173,6 +178,24 @@ fun DiscoverScreen(
             onToggleSaved = { vm.toggleSaved(pick.book, pick.note) },
             primaryAction = pick.wish?.let { wish -> "I have this book" to { vm.moveToLibrary(wish); selected = null } },
         )
+    }
+}
+
+/** A quiet line saying these are saved results, with a way to try the server again. */
+@Composable
+private fun OfflineNote(since: Long?, onRetry: () -> Unit) {
+    if (since == null) return
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Outlined.CloudOff, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                "Offline \u00b7 saved ${DateUtils.getRelativeTimeSpanString(since)}",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onRetry) { Text("Retry") }
+        }
     }
 }
 

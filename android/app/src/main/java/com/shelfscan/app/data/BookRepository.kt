@@ -14,22 +14,33 @@ import com.shelfscan.app.data.remote.SearchRequest
 import com.shelfscan.app.data.remote.ShelfApi
 import com.shelfscan.app.data.remote.UpcomingRequest
 import com.shelfscan.app.util.ImageUtils
+import com.shelfscan.app.util.friendlyMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.builtins.ListSerializer
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import retrofit2.HttpException
 
 class BookRepository(
     private val context: Context,
     private val dao: BookDao,
     private val wishlistDao: WishlistDao,
     private val api: ShelfApi,
+    private val offline: OfflineStore,
+    private val pendingStore: PendingScanStore,
 ) {
+    /** Scans saved while the server was unreachable. */
+    val pendingScans: StateFlow<List<PendingScan>> = pendingStore.scans
+
     val books: Flow<List<Book>> = dao.observeAll()
 
     /** Want to read: books you don't own yet, saved from suggestions. */
@@ -44,13 +55,57 @@ class BookRepository(
 
     suspend fun ownedKeys(): Set<String> = dao.allKeys().toSet()
 
-    suspend fun identify(photos: List<Uri>): Pair<List<BookDto>, String?> {
-        val parts = photos.mapIndexed { i, uri ->
-            val bytes = ImageUtils.prepareForUpload(context, uri)
+    /** Downscaled JPEGs ready to upload (also what the offline queue keeps). */
+    suspend fun preparePhotos(photos: List<Uri>): List<ByteArray> = photos.map { ImageUtils.prepareForUpload(context, it) }
+
+    suspend fun identify(photos: List<ByteArray>): Pair<List<BookDto>, String?> {
+        val parts = photos.mapIndexed { i, bytes ->
             MultipartBody.Part.createFormData("images", "photo_$i.jpg", bytes.toRequestBody("image/jpeg".toMediaType()))
         }
         val res = api.identify(parts)
         return res.books to res.notes
+    }
+
+    // --- Offline scan queue ---
+
+    /** Keep photos that couldn't be sent; the queue worker reads them once the server is reachable. */
+    suspend fun queueScan(photos: List<ByteArray>) {
+        pendingStore.enqueue(photos)
+        ScanQueueWorker.schedule(context)
+    }
+
+    suspend fun refreshPending() = pendingStore.refresh()
+
+    suspend fun discardPending(id: String) = pendingStore.remove(id)
+
+    /**
+     * Sends every queued scan. Returns false if any still couldn't reach the server (try again later).
+     * A scan the server rejects outright (4xx) is marked failed rather than retried forever.
+     */
+    suspend fun processPendingScans(): Boolean {
+        pendingStore.refresh()
+        var allSent = true
+        for (scan in pendingStore.scans.value.filter { it.state == PendingScan.QUEUED }) {
+            try {
+                val (books, notes) = identify(pendingStore.photos(scan.id))
+                pendingStore.update(scan.id) { it.copy(state = PendingScan.READY, books = books, notes = notes) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: HttpException) {
+                val permanent = e.code() in 400..499
+                if (!permanent) allSent = false
+                pendingStore.update(scan.id) {
+                    it.copy(
+                        state = if (permanent) PendingScan.FAILED else PendingScan.QUEUED,
+                        attempts = it.attempts + 1, lastError = e.friendlyMessage(),
+                    )
+                }
+            } catch (e: Exception) { // can't reach the server, timed out, ...
+                allSent = false
+                pendingStore.update(scan.id) { it.copy(attempts = it.attempts + 1, lastError = e.friendlyMessage()) }
+            }
+        }
+        return allSent
     }
 
     /** Returns how many were actually added (duplicates are skipped). A book you now own leaves Want to read. */
@@ -61,6 +116,17 @@ class BookRepository(
     }
 
     suspend fun setStatus(book: Book, status: String) = dao.setStatus(book.id, status)
+
+    suspend fun setStatus(ids: Collection<Long>, status: String) = dao.setStatusMany(ids.toList(), status)
+
+    /** Removes the books and returns them, so the removal can be undone with [restore]. */
+    suspend fun delete(ids: Collection<Long>): List<Book> {
+        val books = dao.byIds(ids.toList())
+        dao.deleteMany(ids.toList())
+        return books
+    }
+
+    suspend fun restore(books: List<Book>) { dao.insertAll(books) }
 
     // --- Want to read ---
 
@@ -169,19 +235,19 @@ class BookRepository(
     }
 
     /** "Similar books" for a book page, remembered for this session. */
-    suspend fun similarTo(book: Book): List<RecommendationDto> {
-        similarCache[book.matchKey]?.let { return it }
+    suspend fun similarTo(book: Book): Fetched<List<RecommendationDto>> {
+        similarCache[book.matchKey]?.let { return Fetched(it) }
         val owned = dao.all()
         val shelf = owned.sortedByDescending { it.author == book.author }.take(150)
-        val recs = api.recommendations(
-            RecommendRequest(
-                books = shelf.map { OwnedBookDto(it.title, it.author, it.genres) } + wantToReadForServer(),
-                limit = 8,
-                similarTo = OwnedBookDto(book.title, book.author, book.genres),
-            )
-        ).recommendations
-        similarCache[book.matchKey] = recs
-        return recs
+        return withOfflineCopy("similar:${book.matchKey}", RECS) {
+            api.recommendations(
+                RecommendRequest(
+                    books = shelf.map { OwnedBookDto(it.title, it.author, it.genres) } + wantToReadForServer(),
+                    limit = 8,
+                    similarTo = OwnedBookDto(book.title, book.author, book.genres),
+                )
+            ).recommendations
+        }.also { if (!it.isOffline) similarCache[book.matchKey] = it.data }
     }
 
     /**
@@ -203,9 +269,9 @@ class BookRepository(
     suspend fun delete(book: Book) = dao.delete(book)
 
     /** Pass an author or a genre to focus the suggestions; neither means "everything I own". */
-    suspend fun recommendations(author: String? = null, genre: String? = null, limit: Int = 10): List<RecommendationDto> {
+    suspend fun recommendations(author: String? = null, genre: String? = null, limit: Int = 10): Fetched<List<RecommendationDto>> {
         val owned = dao.all()
-        if (owned.isEmpty()) return emptyList()
+        if (owned.isEmpty()) return Fetched(emptyList())
         // Send the books the focus is about first, then the most recent: 150 is plenty of taste signal.
         val relevant = { b: Book ->
             (author != null && b.authors.any { it.equals(author, ignoreCase = true) }) ||
@@ -218,7 +284,7 @@ class BookRepository(
             author = author,
             genre = genre,
         )
-        return api.recommendations(body).recommendations
+        return withOfflineCopy("recs:${author.orEmpty()}|${genre.orEmpty()}", RECS) { api.recommendations(body).recommendations }
     }
 
     /** Books already on Want to read go along too, so they aren't suggested again (and they reflect taste). */
@@ -227,14 +293,29 @@ class BookRepository(
     private companion object {
         const val COVERS_V2 = "covers_v2_done"
         const val COVER_RETRY_MS = 3L * 24 * 60 * 60 * 1000 // look again after three days
+        val RECS = ListSerializer(RecommendationDto.serializer())
     }
 
-    suspend fun upcoming(): List<BookDto> {
+    suspend fun upcoming(): Fetched<List<BookDto>> {
         val authors = dao.all().flatMap { it.authors }.groupingBy { it }.eachCount()
             .entries.sortedByDescending { it.value }.map { it.key }.take(40)
-        if (authors.isEmpty()) return emptyList()
-        return api.upcoming(UpcomingRequest(authors)).books
+        if (authors.isEmpty()) return Fetched(emptyList())
+        return withOfflineCopy("upcoming", ListSerializer(BookDto.serializer())) { api.upcoming(UpcomingRequest(authors)).books }
     }
+
+    /**
+     * Fetch, and keep a copy. If the fetch fails for any reason and a copy exists, return the copy
+     * marked offline instead of an error, so the screen still has something useful to show.
+     */
+    private suspend fun <T> withOfflineCopy(key: String, serializer: KSerializer<T>, fetch: suspend () -> T): Fetched<T> =
+        try {
+            fetch().also { offline.save(key, serializer, it) }.let { Fetched(it) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val saved = offline.load(key, serializer) ?: throw e
+            Fetched(saved.data, offlineSince = saved.savedAt)
+        }
 }
 
 fun BookDto.toEntity() = Book(
