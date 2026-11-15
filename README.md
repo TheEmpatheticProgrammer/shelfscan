@@ -1,0 +1,111 @@
+# ShelfScan
+
+An Android app that turns photos of your physical books into a searchable digital library, then suggests what to read next and flags upcoming releases from authors you own.
+
+```
+Android app (Kotlin, Compose, Room)          Backend (FastAPI)                  External
+┌──────────────────────────────┐   HTTPS   ┌───────────────────────┐
+│ Scan: camera / photo picker  │ ────────▶ │ POST /identify         │ ──▶ Claude (vision, tool use)
+│   → downscale to 1600px JPEG │           │   dedupe + enrich      │ ──▶ Google Books (ISBN, cover, genres)
+│ Review & fix → Room DB       │           │ POST /recommendations  │ ──▶ Claude → Google Books
+│ Library: All/Author/Genre    │           │ POST /upcoming         │ ──▶ Google Books (future pub dates)
+│ Discover: For you / Coming   │           └───────────────────────┘
+└──────────────────────────────┘
+```
+
+The library lives on-device (Room). The backend is stateless and holds the API key, so no secret ships in the APK.
+
+## 1. Run the backend
+
+```bash
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env            # add your ANTHROPIC_API_KEY
+set -a; source .env; set +a
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Check it: `curl localhost:8000/health`. Or `docker build -t shelfscan . && docker run --env-file .env -p 8000:8000 shelfscan`.
+
+Tests (LLM and Google Books mocked): `pip install pytest respx && pytest -q`
+
+## 2. Run the app
+
+1. Open `android/` in Android Studio (Ladybug or newer) and let Gradle sync.
+2. Server address is in `android/gradle.properties`:
+   - Emulator: leave `http://10.0.2.2:8000/` (that's your computer from the emulator).
+   - Physical phone on the same Wi-Fi: use your computer's LAN IP, e.g. `http://192.168.1.20:8000/`.
+3. Run the `app` configuration.
+
+Debug builds allow plain HTTP for local testing; release builds require HTTPS, so deploy the backend behind TLS before shipping.
+
+## How it works
+
+**Scanning.** Up to 6 photos per batch. The app downscales each to 1600px on the long edge with EXIF rotation applied, then uploads. The backend asks Claude to list every book via a forced tool call (structured JSON with a per-book confidence), then matches each against Google Books for ISBN, cover, description, page count and categories. Unmatched books keep the LLM's data rather than being dropped.
+
+**Review.** Low-confidence matches (<0.6) start unchecked and are flagged; books already on your shelf are marked and can't be re-added. Tap the pencil to fix a misread title before saving. Duplicates are also blocked at the database level by a normalized title+author key.
+
+**Library.** Grid view plus Author and Genre shelves (co-authored books appear under each author). Search covers title, author and genre. Tapping a genre chip on a book opens the library filtered to it.
+
+**Book page.** A large cover, a 2–3 sentence spoiler-free synopsis with the full description one tap away, and a
+*Similar books* row. The synopsis is condensed from the publisher's (or Open Library's) description, so the model never
+invents a plot; short descriptions are shown as they are, and if the model fails the description's opening is used.
+It is saved on the device, so the page is instant from the second visit. *More by {author}* opens Discover on that author.
+
+**Discover.**
+- *For you*: chips for **All**, your top genres and your most-owned authors. An author shows *More by {author}*
+  (real books from Google Books: editions merged, study guides and unreleased books skipped) and *If you like {author}*
+  (other writers). A genre shows picks within it. Tapping a pick opens a sheet with the reason and description.
+- Every model suggestion is checked against Google Books; titles it can't find are dropped as likely invented, and books
+  you own are removed. If Google Books is unreachable, picks are shown unchecked rather than hidden.
+- *Coming soon*: for your top 40 authors, Google Books is queried newest-first and filtered to publication dates after today.
+
+**Covers.** Open Library's large covers (matched on title and author, addressed by cover id, so not rate limited), else
+Google Books' largest image, else the app's own placeholder. Books scanned before this existed are upgraded once on launch.
+Set `SHELFSCAN_OPEN_LIBRARY=0` to use Google Books only.
+
+## Caching recommendations (Redis, optional)
+
+`/recommendations` takes a model call plus a Google Books check per pick, and the answer rarely changes. Set `REDIS_URL`
+and the finished response is stored for a week; leave it unset and nothing is cached.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `REDIS_URL` | empty (off) | e.g. `redis://localhost:6379/0` |
+| `RECS_CACHE_TTL_S` | 604800 (7 days) | how long an answer is kept |
+| `RECS_CACHE_VERSION` | `1` | bump to discard every stored answer (for example after changing the model behind the gateway alias) |
+| `REDIS_TIMEOUT_S` / `REDIS_COOLDOWN_S` | 0.25 / 30 | a down Redis is skipped for 30 s after an error, so requests never wait on it |
+
+- The key covers the books the model sees, the author/genre focus, the limit, the model and the prompt version. Adding or
+  removing a book changes the key, so the next request recomputes.
+- Each response has an `X-Cache` header: `HIT`, `MISS` or `BYPASS`. Send `"refresh": true` in the body to force a new answer.
+- Answers are not stored when the model call failed or Google Books was unreachable, so a degraded result is never kept.
+- If Redis is down or missing, requests work exactly as before.
+
+Run Redis on Windows (pick one, and keep the data and installs on D:):
+- **Memurai Developer** (Windows-native, Redis-compatible): choose a folder on D: in the installer.
+- **Docker**: `docker run -d --name shelfscan-redis -p 6379:6379 redis:7-alpine`. Docker Desktop keeps its disk image on C: by
+  default; move it in Settings > Resources.
+- **WSL2**: `sudo apt install redis-server && sudo service redis-server start`.
+
+Then `REDIS_URL=redis://localhost:6379/0` before starting the backend. Don't expose port 6379 beyond this PC.
+
+## API
+
+| Endpoint | Body | Returns |
+|---|---|---|
+| `POST /identify` | multipart `images` (1–6, jpeg/png/webp, ≤5 MB) | `{books: Book[], notes?}` |
+| `POST /recommendations` | `{books: [{title, author, genres}], limit?, author?, genre?, similar_to?, refresh?}` | `{recommendations: [{book, reason, section}]}` |
+| `POST /book/details` | `{title, author, isbn?, description?}` | `{cover_url, description, synopsis, isbn, published_date, page_count}` |
+| `POST /covers` | `{books: [{title, author, isbn?}]}` (≤50) | `{covers: [{cover_url, isbn}]}` in request order |
+| `POST /upcoming` | `{authors: string[]}` | `{books: Book[]}` sorted by date |
+
+Set `APP_TOKEN` on the server and `shelfscan.appToken` in the app to require an `X-App-Token` header. That keeps casual traffic off your API key; for a public release, replace it with real auth and rate limiting.
+
+## Known limits and next steps
+
+- Google Books' future-release coverage is decent for major publishers and spotty for small presses. Adding Open Library or a publisher feed would widen it.
+- Upcoming-release *notifications* would be a WorkManager job that calls `/upcoming` weekly and diffs against what it has seen.
+- The Room database is at schema v2 (v1→v2 adds the saved synopsis). Add a migration with every change to the `Book` entity.
+- A "want to read" list from Discover, and reading status (read / reading / to read) on owned books, are natural next features.

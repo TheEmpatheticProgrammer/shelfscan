@@ -1,0 +1,115 @@
+package com.shelfscan.app.ui.scan
+
+import android.net.Uri
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.Companion.APPLICATION_KEY
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.shelfscan.app.ShelfScanApp
+import com.shelfscan.app.data.BookRepository
+import com.shelfscan.app.data.matchKey
+import com.shelfscan.app.data.remote.BookDto
+import com.shelfscan.app.util.friendlyMessage
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+const val MAX_PHOTOS = 6
+private const val LOW_CONFIDENCE = 0.6
+
+data class Candidate(
+    val id: Int,
+    val book: BookDto,
+    val selected: Boolean,
+    val alreadyOwned: Boolean,
+) {
+    val lowConfidence get() = book.confidence < LOW_CONFIDENCE
+}
+
+sealed interface ScanStep {
+    data object Pick : ScanStep
+    data object Identifying : ScanStep
+    data class Review(val candidates: List<Candidate>, val notes: String?) : ScanStep
+    data class Done(val added: Int) : ScanStep
+}
+
+data class ScanState(
+    val photos: List<Uri> = emptyList(),
+    val step: ScanStep = ScanStep.Pick,
+    val error: String? = null,
+)
+
+class ScanViewModel(private val repo: BookRepository) : ViewModel() {
+    private val _state = MutableStateFlow(ScanState())
+    val state: StateFlow<ScanState> = _state.asStateFlow()
+
+    fun addPhotos(uris: List<Uri>) = _state.update {
+        it.copy(photos = (it.photos + uris).distinct().take(MAX_PHOTOS), error = null)
+    }
+
+    fun removePhoto(uri: Uri) = _state.update { it.copy(photos = it.photos - uri) }
+
+    fun dismissError() = _state.update { it.copy(error = null) }
+
+    fun identify() {
+        val photos = _state.value.photos
+        if (photos.isEmpty()) return
+        _state.update { it.copy(step = ScanStep.Identifying, error = null) }
+        viewModelScope.launch {
+            runCatching { repo.identify(photos) to repo.ownedKeys() }
+                .onSuccess { (result, owned) ->
+                    val (books, notes) = result
+                    val candidates = books.mapIndexed { i, b ->
+                        val isOwned = b.matchKey in owned
+                        Candidate(i, b, selected = !isOwned && b.confidence >= LOW_CONFIDENCE, alreadyOwned = isOwned)
+                    }
+                    _state.update { it.copy(step = ScanStep.Review(candidates, notes)) }
+                }
+                .onFailure { e -> _state.update { it.copy(step = ScanStep.Pick, error = e.friendlyMessage()) } }
+        }
+    }
+
+    fun toggle(id: Int) = updateCandidates { list ->
+        list.map { if (it.id == id && !it.alreadyOwned) it.copy(selected = !it.selected) else it }
+    }
+
+    fun edit(id: Int, title: String, author: String, genres: List<String>) = updateCandidates { list ->
+        list.map {
+            if (it.id != id) it
+            // Edited by the user, so it's trusted now. Drop the old cover/ISBN in case they no longer match.
+            else it.copy(
+                book = it.book.copy(
+                    title = title, author = author, genres = genres, confidence = 1.0,
+                    coverUrl = if (title == it.book.title) it.book.coverUrl else null,
+                    isbn = if (title == it.book.title) it.book.isbn else null,
+                ),
+                selected = true,
+            )
+        }
+    }
+
+    fun save() {
+        val review = _state.value.step as? ScanStep.Review ?: return
+        val chosen = review.candidates.filter { it.selected }.map { it.book }
+        viewModelScope.launch {
+            val added = repo.add(chosen)
+            _state.update { it.copy(step = ScanStep.Done(added)) }
+        }
+    }
+
+    fun reset() { _state.value = ScanState() }
+
+    private fun updateCandidates(f: (List<Candidate>) -> List<Candidate>) = _state.update { s ->
+        val review = s.step as? ScanStep.Review ?: return@update s
+        s.copy(step = review.copy(candidates = f(review.candidates)))
+    }
+
+    companion object {
+        val Factory = viewModelFactory {
+            initializer { ScanViewModel((this[APPLICATION_KEY] as ShelfScanApp).repository) }
+        }
+    }
+}
