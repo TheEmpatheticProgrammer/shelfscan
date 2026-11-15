@@ -70,6 +70,9 @@ data class BookDto(
     @SerialName("page_count") val pageCount: Int? = null,
 )
 @Serializable data class UpcomingResponse(val books: List<BookDto>)
+@Serializable data class CandidatesResponse(val candidates: List<String> = emptyList())
+@Serializable data class IsbnRequest(val isbn: String)
+@Serializable data class IsbnResponse(val book: BookDto? = null)
 
 interface ShelfApi {
     @Multipart
@@ -87,6 +90,12 @@ interface ShelfApi {
 
     @POST("book/details")
     suspend fun bookDetails(@Body body: DetailsRequest): DetailsResponse
+
+    @POST("covers/candidates")
+    suspend fun coverCandidates(@Body body: BookRefDto): CandidatesResponse
+
+    @POST("lookup/isbn")
+    suspend fun lookupIsbn(@Body body: IsbnRequest): IsbnResponse
 
     companion object {
         fun create(): ShelfApi {

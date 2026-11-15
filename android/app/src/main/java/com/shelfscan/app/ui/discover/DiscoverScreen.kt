@@ -21,9 +21,11 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -50,7 +52,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.shelfscan.app.data.WishlistItem
+import com.shelfscan.app.data.matchKey
 import com.shelfscan.app.data.remote.BookDto
+import com.shelfscan.app.data.toDto
 import com.shelfscan.app.data.remote.RecommendationDto
 import com.shelfscan.app.ui.components.BookCover
 import com.shelfscan.app.ui.components.BookSheet
@@ -60,7 +65,7 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
 /** One row in a list: the book, plus one quiet line under the author (a reason, a year or a date). */
-private data class Pick(val book: BookDto, val note: String)
+private data class Pick(val book: BookDto, val note: String, val wish: WishlistItem? = null)
 
 private data class Section(val title: String?, val picks: List<Pick>)
 
@@ -72,6 +77,8 @@ fun DiscoverScreen(
     vm: DiscoverViewModel = viewModel(factory = DiscoverViewModel.Factory),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val wantToRead by vm.wantToRead.collectAsStateWithLifecycle()
+    val savedKeys by vm.savedKeys.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var openedFrom by rememberSaveable { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<Pick?>(null) }
@@ -84,20 +91,39 @@ fun DiscoverScreen(
             vm.setFocus(Focus.Author(initialAuthor))
         }
     }
-    LaunchedEffect(tab) { if (tab == 0) vm.loadForYou() else vm.loadUpcoming() }
+    LaunchedEffect(tab) {
+        when (tab) {
+            TAB_FOR_YOU -> vm.loadForYou()
+            TAB_COMING -> vm.loadUpcoming()
+        }
+    }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Discover", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.weight(1f))
-            if (!state.libraryEmpty) {
-                IconButton(onClick = { if (tab == 0) vm.loadForYou(force = true) else vm.loadUpcoming(force = true) }) {
+            if (!state.libraryEmpty && tab != TAB_SAVED) {
+                IconButton(onClick = { if (tab == TAB_FOR_YOU) vm.loadForYou(force = true) else vm.loadUpcoming(force = true) }) {
                     Icon(Icons.Filled.Refresh, "Refresh")
                 }
             }
         }
         PrimaryTabRow(selectedTabIndex = tab) {
-            Tab(tab == 0, { tab = 0 }, text = { Text("For you") }, icon = { Icon(Icons.Filled.AutoAwesome, null) })
-            Tab(tab == 1, { tab = 1 }, text = { Text("Coming soon") }, icon = { Icon(Icons.Filled.EventAvailable, null) })
+            Tab(tab == TAB_FOR_YOU, { tab = TAB_FOR_YOU }, text = { Text("For you") }, icon = { Icon(Icons.Filled.AutoAwesome, null) })
+            Tab(tab == TAB_COMING, { tab = TAB_COMING }, text = { Text("Coming soon") }, icon = { Icon(Icons.Filled.EventAvailable, null) })
+            Tab(tab == TAB_SAVED, { tab = TAB_SAVED }, text = { Text("Want to read") }, icon = { Icon(Icons.Filled.Bookmark, null) })
+        }
+
+        if (tab == TAB_SAVED) {
+            if (wantToRead.isEmpty()) EmptyState(
+                icon = Icons.Outlined.BookmarkBorder,
+                title = "Nothing saved yet",
+                body = "Tap Want to read on any suggestion to keep it here.",
+            )
+            else PickList(
+                listOf(Section(null, wantToRead.map { Pick(it.toDto(), it.reason.orEmpty(), wish = it) })),
+                onClick = { selected = it },
+            )
+            return@Column
         }
 
         if (state.libraryEmpty) {
@@ -110,7 +136,7 @@ fun DiscoverScreen(
             return@Column
         }
 
-        if (tab == 0) {
+        if (tab == TAB_FOR_YOU) {
             FocusChips(state.focusOptions, state.focus, onSelect = vm::setFocus)
             LoadContent(state.forYou, onRetry = { vm.loadForYou(force = true) }) { recs ->
                 val sections = sectionsFor(state.focus, recs)
@@ -139,8 +165,20 @@ fun DiscoverScreen(
         }
     }
 
-    selected?.let { pick -> BookSheet(pick.book, pick.note, onDismiss = { selected = null }) }
+    selected?.let { pick ->
+        BookSheet(
+            pick.book, pick.note,
+            onDismiss = { selected = null },
+            saved = pick.book.matchKey in savedKeys,
+            onToggleSaved = { vm.toggleSaved(pick.book, pick.note) },
+            primaryAction = pick.wish?.let { wish -> "I have this book" to { vm.moveToLibrary(wish); selected = null } },
+        )
+    }
 }
+
+private const val TAB_FOR_YOU = 0
+private const val TAB_COMING = 1
+private const val TAB_SAVED = 2
 
 private fun sectionsFor(focus: Focus, recs: List<RecommendationDto>): List<Section> {
     val (byAuthor, similar) = recs.partition { it.section == RecommendationDto.SECTION_BY_AUTHOR }

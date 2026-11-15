@@ -70,4 +70,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     implementation("io.coil-kt:coil-compose:2.7.0")
+
+    // Barcode scanning through Google Play services: no camera permission, no camera UI to maintain.
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+
+    testImplementation("junit:junit:4.13.2")
 }

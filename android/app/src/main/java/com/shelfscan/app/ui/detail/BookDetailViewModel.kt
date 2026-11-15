@@ -9,6 +9,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.shelfscan.app.ShelfScanApp
 import com.shelfscan.app.data.Book
 import com.shelfscan.app.data.BookRepository
+import com.shelfscan.app.data.remote.BookDto
 import com.shelfscan.app.data.remote.RecommendationDto
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +25,9 @@ import kotlinx.coroutines.launch
 /** Loading state for one part of the page, so each part can appear as soon as it's ready. */
 enum class Part { Loading, Ready, Failed }
 
+/** Covers to choose from in the "Change cover" sheet. */
+data class CoverChoices(val state: Part = Part.Loading, val urls: List<String> = emptyList())
+
 data class Extras(
     val synopsis: Part = Part.Loading,
     val similar: List<RecommendationDto> = emptyList(),
@@ -35,6 +39,38 @@ class BookDetailViewModel(private val repo: BookRepository, bookId: Long) : View
 
     private val _extras = MutableStateFlow(Extras())
     val extras: StateFlow<Extras> = _extras.asStateFlow()
+
+    private val _covers = MutableStateFlow(CoverChoices())
+    val covers: StateFlow<CoverChoices> = _covers.asStateFlow()
+
+    val savedKeys: StateFlow<Set<String>> =
+        repo.wishlistKeys.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    fun setStatus(status: String) {
+        val b = book.value ?: return
+        viewModelScope.launch { repo.setStatus(b, status) }
+    }
+
+    fun toggleSaved(book: BookDto, reason: String) = viewModelScope.launch { repo.toggleWantToRead(book, reason) }
+
+    fun loadCoverChoices() {
+        val b = book.value ?: return
+        _covers.value = CoverChoices()
+        viewModelScope.launch {
+            _covers.value = try {
+                CoverChoices(Part.Ready, repo.coverCandidates(b))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                CoverChoices(Part.Failed)
+            }
+        }
+    }
+
+    fun chooseCover(url: String) {
+        val b = book.value ?: return
+        viewModelScope.launch { repo.setCover(b, url) }
+    }
 
     init {
         // Load once per book identity; an edit to the title or author makes it a new book and reloads.
