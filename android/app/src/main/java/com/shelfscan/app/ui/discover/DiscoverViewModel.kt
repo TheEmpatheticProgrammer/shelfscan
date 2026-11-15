@@ -8,14 +8,17 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.shelfscan.app.ShelfScanApp
 import com.shelfscan.app.data.Book
 import com.shelfscan.app.data.BookRepository
+import com.shelfscan.app.data.WishlistItem
 import com.shelfscan.app.data.remote.BookDto
 import com.shelfscan.app.data.remote.RecommendationDto
 import com.shelfscan.app.util.friendlyMessage
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -30,8 +33,14 @@ sealed interface Load<out T> {
 sealed interface Focus {
     val label: String
     data object All : Focus { override val label = "All" }
-    data class Author(val name: String) : Focus { override val label get() = name }
-    data class Genre(val name: String) : Focus { override val label get() = name }
+    data class Author(val name: String) : Focus {
+        override val label: String
+            get() = name
+    }
+    data class Genre(val name: String) : Focus {
+        override val label: String
+            get() = name
+    }
 }
 
 data class DiscoverState(
@@ -45,6 +54,15 @@ data class DiscoverState(
 class DiscoverViewModel(private val repo: BookRepository) : ViewModel() {
     private val _state = MutableStateFlow(DiscoverState())
     val state: StateFlow<DiscoverState> = _state.asStateFlow()
+
+    val wantToRead: StateFlow<List<WishlistItem>> =
+        repo.wishlist.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val savedKeys: StateFlow<Set<String>> =
+        repo.wishlistKeys.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    fun toggleSaved(book: BookDto, reason: String) = viewModelScope.launch { repo.toggleWantToRead(book, reason) }
+
+    fun moveToLibrary(item: WishlistItem) = viewModelScope.launch { repo.moveToLibrary(item) }
 
     // Results per focus, reused until the shelf changes, so flipping between chips is instant.
     private val recsCache = mutableMapOf<Focus, Pair<Set<String>, List<RecommendationDto>>>()

@@ -1,5 +1,6 @@
 package com.shelfscan.app.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -17,6 +18,10 @@ data class Book(
     val pageCount: Int? = null,
     /** 2-3 sentence summary for the book page, written once by the server and kept. */
     val synopsis: String? = null,
+    /** One of [ReadingStatus]. */
+    @ColumnInfo(defaultValue = ReadingStatus.UNREAD) val readingStatus: String = ReadingStatus.UNREAD,
+    /** When the server last looked for a cover and found none; null if never. Drives the periodic retry. */
+    val coverCheckedAt: Long? = null,
     val addedAt: Long = System.currentTimeMillis(),
     val matchKey: String = matchKeyOf(title, author),
 ) {
@@ -29,3 +34,15 @@ data class Book(
 
 fun matchKeyOf(title: String, author: String): String =
     (title + author).lowercase().filter { it.isLetterOrDigit() }
+
+object ReadingStatus {
+    const val UNREAD = "unread"
+    const val READING = "reading"
+    const val READ = "read"
+    val all = listOf(UNREAD, READING, READ)
+    fun label(status: String) = when (status) {
+        READING -> "Reading"
+        READ -> "Read"
+        else -> "Unread"
+    }
+}

@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -72,6 +73,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.shelfscan.app.ui.components.BookCover
 import com.shelfscan.app.ui.components.EditBookDialog
+import com.google.mlkit.common.MlKitException
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.shelfscan.app.util.ImageUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -99,8 +104,12 @@ fun ScanScreen(
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (val step = state.step) {
-                ScanStep.Pick -> PickPhotos(state.photos, vm::addPhotos, vm::removePhoto, vm::identify)
+                ScanStep.Pick -> PickPhotos(
+                    state.photos, vm::addPhotos, vm::removePhoto, vm::identify,
+                    onBarcode = vm::lookupBarcode, onBarcodeError = vm::showError,
+                )
                 ScanStep.Identifying -> Identifying(state.photos.size)
+                ScanStep.LookingUp -> Busy("Looking up that book…", "Finding the title, author and cover for this ISBN.")
                 is ScanStep.Review -> Review(step, vm::toggle, vm::edit, vm::save, onRetake = vm::reset)
                 is ScanStep.Done -> Done(step.added, onScanMore = vm::reset, onFinished = onFinished)
             }
@@ -114,8 +123,19 @@ private fun PickPhotos(
     onAdd: (List<Uri>) -> Unit,
     onRemove: (Uri) -> Unit,
     onIdentify: () -> Unit,
+    onBarcode: (String) -> Unit,
+    onBarcodeError: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    // Google's code scanner: its own camera screen, no camera permission needed, runs on the phone.
+    val scanner = remember(context) {
+        GmsBarcodeScanning.getClient(
+            context,
+            GmsBarcodeScannerOptions.Builder()
+                .setBarcodeFormats(Barcode.FORMAT_EAN_13, Barcode.FORMAT_UPC_A, Barcode.FORMAT_EAN_8)
+                .build(),
+        )
+    }
     var pendingCapture by rememberSaveable { mutableStateOf<Uri?>(null) }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         pendingCapture?.takeIf { ok }?.let { onAdd(listOf(it)) }
@@ -152,6 +172,23 @@ private fun PickPhotos(
             ) {
                 Icon(Icons.Filled.PhotoLibrary, null); Spacer(Modifier.width(8.dp)); Text("Gallery")
             }
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = {
+                scanner.startScan()
+                    .addOnSuccessListener { code -> code.rawValue?.let(onBarcode) }
+                    .addOnFailureListener { e ->
+                        onBarcodeError(
+                            if (e is MlKitException && e.errorCode == MlKitException.UNAVAILABLE)
+                                "The barcode scanner is still downloading. Try again in a minute."
+                            else "Couldn't start the barcode scanner."
+                        )
+                    }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Filled.QrCodeScanner, null); Spacer(Modifier.width(8.dp)); Text("Scan a barcode (one book)")
         }
         Spacer(Modifier.height(16.dp))
 
@@ -202,6 +239,21 @@ private fun PickPhotos(
         ) {
             Text(if (photos.size > 1) "Identify books in ${photos.size} photos" else "Identify books")
         }
+    }
+}
+
+@Composable
+private fun Busy(title: String, body: String) {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        CircularProgressIndicator()
+        Spacer(Modifier.height(24.dp))
+        Text(title, style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(8.dp))
+        Text(body, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

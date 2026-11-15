@@ -1,6 +1,7 @@
 package com.shelfscan.app.ui.components
 
 import android.net.Uri
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -9,14 +10,21 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -40,7 +48,16 @@ import com.shelfscan.app.data.remote.BookDto
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BookSheet(book: BookDto, note: String, onDismiss: () -> Unit) {
+fun BookSheet(
+    book: BookDto,
+    note: String,
+    onDismiss: () -> Unit,
+    /** Whether it's on Want to read; null hides the button. */
+    saved: Boolean? = null,
+    onToggleSaved: () -> Unit = {},
+    /** An extra main action, e.g. "I have this book" on the Want to read list. */
+    primaryAction: Pair<String, () -> Unit>? = null,
+) {
     val uri = LocalUriHandler.current
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(
@@ -89,10 +106,23 @@ fun BookSheet(book: BookDto, note: String, onDismiss: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(20.dp))
-            Button(
-                onClick = { uri.openUri("https://www.google.com/search?tbm=bks&q=" + Uri.encode("${book.title} ${book.author}")) },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Find this book") }
+            primaryAction?.let { (label, action) ->
+                Button(onClick = action, modifier = Modifier.fillMaxWidth()) { Text(label) }
+                Spacer(Modifier.height(8.dp))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (saved != null) {
+                    FilledTonalButton(onClick = onToggleSaved, modifier = Modifier.weight(1f)) {
+                        Icon(if (saved) Icons.Filled.Bookmark else Icons.Outlined.BookmarkBorder, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (saved) "Saved" else "Want to read")
+                    }
+                }
+                OutlinedButton(
+                    onClick = { uri.openUri("https://www.google.com/search?tbm=bks&q=" + Uri.encode("${book.title} ${book.author}")) },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Find this book") }
+            }
         }
     }
 }

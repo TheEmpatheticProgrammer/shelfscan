@@ -53,34 +53,68 @@ class OpenLibrary:
             return None
 
     async def find(self, title: str, author: str, isbn: str | None = None) -> Work | None:
-        """The matching work, or None. Results (including misses) are cached for the server's lifetime."""
+        """The matching work, or None. Results (including misses) are cached for the server's lifetime.
+        Tries cleaner forms of the title, and searches by title alone when the author is unknown."""
         if not enabled():
             return None
-        from .catalog import _authors_match, _titles_match  # local import: catalog imports this module
+        from .catalog import _authors_match, _titles_match, is_unknown, title_variants  # catalog imports us
 
         cache_key = f"{title.lower()}|{author.lower()}|{isbn or ''}"
         if cache_key in self._cache:
             return self._cache[cache_key]
         fields = "key,title,author_name,cover_i,first_publish_year"
-        queries = []
+        queries: list[tuple[str | None, dict]] = []
         if isbn:
-            queries.append({"isbn": isbn, "fields": fields, "limit": 1})
-        queries.append({"title": title, "author": author, "fields": fields, "limit": 5})
+            queries.append((None, {"isbn": isbn, "fields": fields, "limit": 1}))
+        for variant in title_variants(title):
+            params = {"title": variant, "fields": fields, "limit": 5}
+            if not is_unknown(author):
+                params["author"] = author
+            queries.append((variant, params))
         found: Work | None = None
-        for params in queries:
+        for variant, params in queries:
             data = await self._get(SEARCH_URL, params)
             if data is None:
                 return None  # unreachable: don't cache, try again next time
             for doc in data.get("docs", []):
-                by_isbn = "isbn" in params
-                if by_isbn or (_titles_match(title, doc.get("title", "")) and
-                               _authors_match(author, doc.get("author_name", []))):
+                if variant is None or (_titles_match(variant, doc.get("title", "")) and
+                                       _authors_match(author, doc.get("author_name", []))):
                     found = Work(doc.get("key"), doc.get("cover_i"), doc.get("first_publish_year"))
                     break
             if found and found.cover_id:
                 break
         self._cache[cache_key] = found
         return found
+
+    async def by_isbn(self, isbn: str) -> dict | None:
+        """Raw search result for one ISBN (title, authors, cover id, first year, typical page count)."""
+        if not enabled():
+            return None
+        data = await self._get(SEARCH_URL, {
+            "isbn": isbn, "limit": 1,
+            "fields": "key,title,author_name,cover_i,first_publish_year,number_of_pages_median",
+        })
+        docs = (data or {}).get("docs") or []
+        return docs[0] if docs else None
+
+    async def cover_candidates(self, title: str, author: str, isbn: str | None = None) -> list[str]:
+        """Cover URLs of every matching work Open Library knows (often several editions' artwork)."""
+        if not enabled():
+            return []
+        from .catalog import _authors_match, _titles_match, is_unknown, title_variants
+
+        urls: list[str] = []
+        if isbn and (doc := await self.by_isbn(isbn)) and doc.get("cover_i"):
+            urls.append(COVER_URL.format(id=doc["cover_i"], size="L"))
+        for variant in title_variants(title)[:2]:
+            params = {"title": variant, "fields": "title,author_name,cover_i", "limit": 10}
+            if not is_unknown(author):
+                params["author"] = author
+            for doc in ((await self._get(SEARCH_URL, params)) or {}).get("docs", []):
+                if doc.get("cover_i") and _titles_match(variant, doc.get("title", "")) and \
+                        _authors_match(author, doc.get("author_name", [])):
+                    urls.append(COVER_URL.format(id=doc["cover_i"], size="L"))
+        return list(dict.fromkeys(urls))
 
     async def description(self, work: Work) -> str | None:
         """The work's description (often a plainer summary than the publisher's copy)."""

@@ -32,6 +32,7 @@ data class Candidate(
 sealed interface ScanStep {
     data object Pick : ScanStep
     data object Identifying : ScanStep
+    data object LookingUp : ScanStep // a scanned barcode's ISBN
     data class Review(val candidates: List<Candidate>, val notes: String?) : ScanStep
     data class Done(val added: Int) : ScanStep
 }
@@ -71,6 +72,31 @@ class ScanViewModel(private val repo: BookRepository) : ViewModel() {
                 .onFailure { e -> _state.update { it.copy(step = ScanStep.Pick, error = e.friendlyMessage()) } }
         }
     }
+
+    /** A barcode was scanned: find the book and show it for review, like a one-book photo scan. */
+    fun lookupBarcode(raw: String) {
+        val isbn = raw.filter { it.isDigit() || it == 'X' || it == 'x' }.uppercase()
+        if (!looksLikeIsbn(isbn)) {
+            _state.update { it.copy(error = "That barcode isn't a book's ISBN. Try the one on the back cover, usually above the price.") }
+            return
+        }
+        _state.update { it.copy(step = ScanStep.LookingUp, error = null) }
+        viewModelScope.launch {
+            runCatching { repo.lookupIsbn(isbn) to repo.ownedKeys() }
+                .onSuccess { (book, owned) ->
+                    if (book == null) {
+                        _state.update { it.copy(step = ScanStep.Pick, error = "No book found for ISBN $isbn. Try a photo of the cover instead.") }
+                    } else {
+                        val isOwned = book.matchKey in owned
+                        val candidate = Candidate(0, book, selected = !isOwned, alreadyOwned = isOwned)
+                        _state.update { it.copy(step = ScanStep.Review(listOf(candidate), notes = null)) }
+                    }
+                }
+                .onFailure { e -> _state.update { it.copy(step = ScanStep.Pick, error = e.friendlyMessage()) } }
+        }
+    }
+
+    fun showError(message: String) = _state.update { it.copy(error = message) }
 
     fun toggle(id: Int) = updateCandidates { list ->
         list.map { if (it.id == id && !it.alreadyOwned) it.copy(selected = !it.selected) else it }
@@ -112,4 +138,11 @@ class ScanViewModel(private val repo: BookRepository) : ViewModel() {
             initializer { ScanViewModel((this[APPLICATION_KEY] as ShelfScanApp).repository) }
         }
     }
+}
+
+/** Book barcodes are EAN-13 starting 978 or 979; older ones may carry a 10-character ISBN. */
+internal fun looksLikeIsbn(code: String): Boolean = when (code.length) {
+    13 -> code.all { it.isDigit() } && (code.startsWith("978") || code.startsWith("979"))
+    10 -> code.dropLast(1).all { it.isDigit() } && (code.last().isDigit() || code.last() == 'X')
+    else -> false
 }

@@ -44,11 +44,17 @@ Debug builds allow plain HTTP for local testing; release builds require HTTPS, s
 
 **Scanning.** Up to 6 photos per batch. The app downscales each to 1600px on the long edge with EXIF rotation applied, then uploads. The backend asks Claude to list every book via a forced tool call (structured JSON with a per-book confidence), then matches each against Google Books for ISBN, cover, description, page count and categories. Unmatched books keep the LLM's data rather than being dropped.
 
+**Barcode.** *Scan a barcode (one book)* uses Google's code scanner (no camera permission). The ISBN is looked up in
+Google Books, then Open Library, and the book goes through the same review step as a photo.
+
 **Review.** Low-confidence matches (<0.6) start unchecked and are flagged; books already on your shelf are marked and can't be re-added. Tap the pencil to fix a misread title before saving. Duplicates are also blocked at the database level by a normalized title+author key.
 
-**Library.** Grid view plus Author and Genre shelves (co-authored books appear under each author). Search covers title, author and genre. Tapping a genre chip on a book opens the library filtered to it.
+**Library.** Grid view plus Author and Genre shelves (co-authored books appear under each author). Search covers title, author and genre. Tapping a genre chip on a book opens the library filtered to it. Books marked *Reading* get their own row at the top.
 
-**Book page.** A large cover, a 2–3 sentence spoiler-free synopsis with the full description one tap away, and a
+**Backup.** The ⋮ menu exports the library and the Want to read list to a JSON file you save anywhere (Drive,
+Downloads), and imports one back, adding only what's missing. Use it to move to a new phone.
+
+**Book page.** Unread / Reading / Read, a large cover (tap *Change cover* to pick another edition's artwork), a 2–3 sentence spoiler-free synopsis with the full description one tap away, and a
 *Similar books* row. The synopsis is condensed from the publisher's (or Open Library's) description, so the model never
 invents a plot; short descriptions are shown as they are, and if the model fails the description's opening is used.
 It is saved on the device, so the page is instant from the second visit. *More by {author}* opens Discover on that author.
@@ -60,10 +66,14 @@ It is saved on the device, so the page is instant from the second visit. *More b
 - Every model suggestion is checked against Google Books; titles it can't find are dropped as likely invented, and books
   you own are removed. If Google Books is unreachable, picks are shown unchecked rather than hidden.
 - *Coming soon*: for your top 40 authors, Google Books is queried newest-first and filtered to publication dates after today.
+- *Want to read*: suggestions you saved with the bookmark button. *I have this book* moves one into the library, and
+  scanning a book you saved removes it from the list. Saved books aren't suggested again.
 
 **Covers.** Open Library's large covers (matched on title and author, addressed by cover id, so not rate limited), else
-Google Books' largest image, else the app's own placeholder. Books scanned before this existed are upgraded once on launch.
-Set `SHELFSCAN_OPEN_LIBRARY=0` to use Google Books only.
+Google Books' largest image, else the app's own placeholder. Scanned titles are also tried without series decorations
+("(Stormlight Archive, #1)", "Book 1:"), and by title alone when the author couldn't be read. Books still without a cover
+are looked up again on launch, at most every three days each. Downloaded covers are kept in a 300 MB on-device cache,
+so they load instantly and offline. Set `SHELFSCAN_OPEN_LIBRARY=0` to use Google Books only.
 
 ## Caching recommendations (Redis, optional)
 
@@ -99,6 +109,8 @@ Then `REDIS_URL=redis://localhost:6379/0` before starting the backend. Don't exp
 | `POST /recommendations` | `{books: [{title, author, genres}], limit?, author?, genre?, similar_to?, refresh?}` | `{recommendations: [{book, reason, section}]}` |
 | `POST /book/details` | `{title, author, isbn?, description?}` | `{cover_url, description, synopsis, isbn, published_date, page_count}` |
 | `POST /covers` | `{books: [{title, author, isbn?}]}` (≤50) | `{covers: [{cover_url, isbn}]}` in request order |
+| `POST /covers/candidates` | `{title, author, isbn?}` | `{candidates: [url]}`, best first |
+| `POST /lookup/isbn` | `{isbn}` | `{book: Book \| null}` |
 | `POST /upcoming` | `{authors: string[]}` | `{books: Book[]}` sorted by date |
 
 Set `APP_TOKEN` on the server and `shelfscan.appToken` in the app to require an `X-App-Token` header. That keeps casual traffic off your API key; for a public release, replace it with real auth and rate limiting.
@@ -107,5 +119,6 @@ Set `APP_TOKEN` on the server and `shelfscan.appToken` in the app to require an 
 
 - Google Books' future-release coverage is decent for major publishers and spotty for small presses. Adding Open Library or a publisher feed would widen it.
 - Upcoming-release *notifications* would be a WorkManager job that calls `/upcoming` weekly and diffs against what it has seen.
-- The Room database is at schema v2 (v1→v2 adds the saved synopsis). Add a migration with every change to the `Book` entity.
+- The Room database is at schema v3 (v2 adds the saved synopsis; v3 adds reading status, the cover-retry time and the
+  Want to read table). Add a migration with every entity change.
 - A "want to read" list from Discover, and reading status (read / reading / to read) on owned books, are natural next features.

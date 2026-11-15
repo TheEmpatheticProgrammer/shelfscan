@@ -1,6 +1,22 @@
 package com.shelfscan.app.ui.detail
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
+import com.shelfscan.app.data.ReadingStatus
+import com.shelfscan.app.data.matchKey
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -67,6 +83,9 @@ fun BookDetailScreen(
 ) {
     val book by vm.book.collectAsStateWithLifecycle()
     val extras by vm.extras.collectAsStateWithLifecycle()
+    val savedKeys by vm.savedKeys.collectAsStateWithLifecycle()
+    val covers by vm.covers.collectAsStateWithLifecycle()
+    var pickingCover by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(false) }
     var sheetFor by remember { mutableStateOf<RecommendationDto?>(null) }
@@ -85,7 +104,12 @@ fun BookDetailScreen(
     ) { padding ->
         val b = book ?: return@Scaffold
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState())) {
-            Header(b, onMoreByAuthor, Modifier.padding(horizontal = 20.dp))
+            Header(
+                b, onMoreByAuthor,
+                onChangeCover = { vm.loadCoverChoices(); pickingCover = true },
+                modifier = Modifier.padding(horizontal = 20.dp),
+            )
+            StatusRow(b.readingStatus, vm::setStatus, Modifier.padding(start = 20.dp, end = 20.dp, top = 20.dp))
             if (b.genres.isNotEmpty()) GenreChips(b.genres, onGenreClick, Modifier.padding(start = 20.dp, end = 20.dp, top = 16.dp))
             About(b, extras.synopsis, Modifier.padding(start = 20.dp, end = 20.dp, top = 28.dp))
             Similar(
@@ -121,13 +145,35 @@ fun BookDetailScreen(
         }
     }
 
-    sheetFor?.let { rec -> BookSheet(rec.book, rec.reason, onDismiss = { sheetFor = null }) }
+    sheetFor?.let { rec ->
+        BookSheet(
+            rec.book, rec.reason,
+            onDismiss = { sheetFor = null },
+            saved = rec.book.matchKey in savedKeys,
+            onToggleSaved = { vm.toggleSaved(rec.book, rec.reason) },
+        )
+    }
+    if (pickingCover) {
+        CoverPicker(
+            current = book?.coverUrl,
+            choices = covers,
+            onRetry = vm::loadCoverChoices,
+            onPick = { vm.chooseCover(it); pickingCover = false },
+            onDismiss = { pickingCover = false },
+        )
+    }
 }
 
 @Composable
-private fun Header(b: Book, onMoreByAuthor: (String) -> Unit, modifier: Modifier = Modifier) {
+private fun Header(b: Book, onMoreByAuthor: (String) -> Unit, onChangeCover: () -> Unit, modifier: Modifier = Modifier) {
     Row(modifier) {
-        BookCover(b.coverUrl, b.title, b.author, Modifier.width(132.dp))
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            BookCover(
+                b.coverUrl, b.title, b.author,
+                Modifier.width(132.dp).clip(RoundedCornerShape(6.dp)).clickable(onClick = onChangeCover),
+            )
+            TextButton(onClick = onChangeCover) { Text("Change cover", style = MaterialTheme.typography.labelMedium) }
+        }
         Spacer(Modifier.width(18.dp))
         Column(Modifier.weight(1f).padding(top = 4.dp)) {
             Text(b.title, style = MaterialTheme.typography.headlineSmall)
@@ -263,4 +309,65 @@ private fun PlaceholderBar(fraction: Float, height: Int = 10) {
         Modifier.fillMaxWidth(fraction).height(height.dp).clip(RoundedCornerShape(4.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant)
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StatusRow(status: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
+    SingleChoiceSegmentedButtonRow(modifier.fillMaxWidth()) {
+        ReadingStatus.all.forEachIndexed { i, value ->
+            SegmentedButton(
+                selected = status == value,
+                onClick = { onChange(value) },
+                shape = SegmentedButtonDefaults.itemShape(i, ReadingStatus.all.size),
+            ) { Text(ReadingStatus.label(value)) }
+        }
+    }
+}
+
+/** Pick the right cover when the automatic one is wrong or missing. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CoverPicker(
+    current: String?,
+    choices: CoverChoices,
+    onRetry: () -> Unit,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).navigationBarsPadding().padding(bottom = 16.dp)) {
+            Text("Choose a cover", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(12.dp))
+            when {
+                choices.state == Part.Loading -> Box(Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+                choices.state == Part.Failed -> TextButton(onClick = onRetry) { Text("Couldn't load covers. Try again") }
+                choices.urls.isEmpty() -> Text(
+                    "No covers found for this book. If its title or author was misread, fix it with Edit and try again.",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                else -> LazyVerticalGrid(
+                    columns = GridCells.Fixed(3),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.heightIn(max = 520.dp),
+                ) {
+                    gridItems(choices.urls) { url ->
+                        val chosen = url == current
+                        AsyncImage(
+                            model = url,
+                            contentDescription = if (chosen) "Current cover" else "Cover option",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.aspectRatio(2f / 3f).clip(RoundedCornerShape(6.dp))
+                                .then(if (chosen) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp)) else Modifier)
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .clickable { onPick(url) },
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
