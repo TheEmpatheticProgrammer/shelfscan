@@ -14,6 +14,8 @@ fun Throwable.friendlyMessage(): String = when (this) {
     is IOException -> "Can't reach the ShelfScan server. Check your connection and that the server is running."
     is HttpException -> when (code()) {
         401 -> "The server rejected this app's token."
+        // The app is newer than the running server (e.g. barcode lookup on a server started before it existed).
+        404 -> "The server doesn't know this feature yet. Restart it with the latest code."
         413 -> "That photo is too large."
         415 -> "That image format isn't supported."
         502 -> "The AI model server failed. Check the ShelfScan server log."

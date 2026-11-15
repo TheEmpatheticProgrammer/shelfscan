@@ -79,11 +79,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.shelfscan.app.ui.components.BookCover
 import com.shelfscan.app.ui.components.EditBookDialog
-import com.google.mlkit.common.MlKitException
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.shelfscan.app.data.PendingScan
+import com.shelfscan.app.util.BookBarcodeScanner
 import com.shelfscan.app.util.ImageUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -142,15 +139,9 @@ private fun PickPhotos(
     onDiscardPending: (PendingScan) -> Unit,
 ) {
     val context = LocalContext.current
-    // Google's code scanner: its own camera screen, no camera permission needed, runs on the phone.
-    val scanner = remember(context) {
-        GmsBarcodeScanning.getClient(
-            context,
-            GmsBarcodeScannerOptions.Builder()
-                .setBarcodeFormats(Barcode.FORMAT_EAN_13, Barcode.FORMAT_UPC_A, Barcode.FORMAT_EAN_8)
-                .build(),
-        )
-    }
+    val scanner = remember(context) { BookBarcodeScanner(context) }
+    // Fetch the scanner module now if it's missing, so it's ready by the time Barcode is tapped.
+    LaunchedEffect(scanner) { scanner.prepare() }
     var pendingCapture by rememberSaveable { mutableStateOf<Uri?>(null) }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
         pendingCapture?.takeIf { ok }?.let { onAdd(listOf(it)) }
@@ -196,17 +187,7 @@ private fun PickPhotos(
         // One book at a time: its barcode, or its title typed in.
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedButton(
-                onClick = {
-                    scanner.startScan()
-                        .addOnSuccessListener { code -> code.rawValue?.let(onBarcode) }
-                        .addOnFailureListener { e ->
-                            onBarcodeError(
-                                if (e is MlKitException && e.errorCode == MlKitException.UNAVAILABLE)
-                                    "The barcode scanner is still downloading. Try again in a minute."
-                                else "Couldn't start the barcode scanner."
-                            )
-                        }
-                },
+                onClick = { scanner.scan(onCode = onBarcode, onWaiting = onBarcodeError, onError = onBarcodeError) },
                 modifier = Modifier.weight(1f),
             ) {
                 Icon(Icons.Filled.QrCodeScanner, null); Spacer(Modifier.width(8.dp)); Text("Barcode")

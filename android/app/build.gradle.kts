@@ -112,6 +112,8 @@ dependencies {
 
     // Barcode scanning through Google Play services: no camera permission, no camera UI to maintain.
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    // ModuleInstall API: download the scanner module on demand (the manifest entry only works for Play installs).
+    implementation("com.google.android.gms:play-services-base:18.5.0")
 
     testImplementation("junit:junit:4.13.2")
 }
