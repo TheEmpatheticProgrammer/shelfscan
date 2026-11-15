@@ -1,0 +1,37 @@
+name: Bug
+description: Something is broken.
+labels: ["bug"]
+projects: ["TheEmpatheticProgrammer/1"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1. 
+        2. 
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options: ["p1 - do next", "p2 - soon", "p3 - whenever"]
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Logs, screenshots, device/OS
