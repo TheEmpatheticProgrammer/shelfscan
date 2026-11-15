@@ -59,9 +59,10 @@ IDENTIFY_TOOL = {
 }
 
 IDENTIFY_PROMPT = """These photos show physical books the user owns — covers, spines on a shelf, or stacks.
-Identify every distinct book you can read. Use your knowledge to complete partially visible titles and
-to supply the author when only the title is visible. Don't list the same book twice across photos.
-Skip anything that isn't a book. Call report_books with the results."""
+Identify every distinct book whose title you can read. Copy each title as printed; never invent or
+complete a title you can't fully see. You may supply the author when only the title is visible and you are
+sure of it. An author's name is not a title. Don't list the same book twice across photos.
+Skip anything that isn't a book or that you would be guessing at. Call report_books with the results."""
 
 RECOMMEND_TOOL = {
     "name": "recommend_books",
@@ -89,9 +90,10 @@ RECOMMEND_TOOL = {
 
 
 SINGLE_PHOTO_PROMPT = """This photo shows physical books the user owns: covers, spines on a shelf, or a stack.
-Identify every distinct book you can read. Use your knowledge to complete partially visible titles and
-to supply the author when only the title is visible. Skip anything that isn't a book.
-Only list books you can actually see; leave out any you would be guessing at."""
+Identify every distinct book whose title you can read. Copy each title exactly as printed; never invent or
+complete a title you can't fully see. You may supply the author when only the title is visible and you are
+sure of it, otherwise write Unknown. An author's name is not a title: if a spine shows only an author, skip it.
+Skip anything that isn't a book. Leave out any book you would be guessing at; a shorter, correct list is better."""
 
 JSON_IDENTIFY_SUFFIX = """
 Reply with ONLY a JSON object, no prose and no code fences, in exactly this shape:

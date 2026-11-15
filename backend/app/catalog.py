@@ -9,6 +9,7 @@ from datetime import date
 
 import httpx
 
+from .identity import SNAP_MIN, snap
 from .models import Book
 from .openlibrary import OpenLibrary
 
@@ -174,17 +175,42 @@ class Catalog:
         title alone when the author couldn't be read."""
         reachable = False
         unknown = is_unknown(book.author)
+        pool: list[dict] = []  # everything the catalog returned for this book, for the near-miss pass below
+        queries_run: set[str] = set()
         for title in title_variants(book.title):
             queries = [f'intitle:"{title}"'] if unknown else [f'intitle:"{title}" inauthor:"{book.author}"', f"{title} {book.author}"]
             for q in queries:
+                queries_run.add(q)
                 items = await self._search(q)
                 if items is None:
                     continue
                 reachable = True
+                pool += items
                 for item in items:
                     info = item.get("volumeInfo", {})
                     if _titles_match(title, info.get("title", "")) and _authors_match(book.author, info.get("authors", [])):
                         return item, True
+        # No exact match. The model may have misread a word or two ("Shadow of Wars" for "Shadow Wars"), so
+        # accept a catalog title that is nearly the same, but only with a readable author that agrees, and
+        # with the same volume number. The caller then uses the catalog's title instead of the misread one.
+        if not unknown:
+            near = f'{book.title} inauthor:"{book.author}"'
+            if near not in queries_run:
+                items = await self._search(near)
+                if items is not None:
+                    reachable = True
+                    pool += items
+            best, best_item = 0.0, None
+            for item in pool:
+                info = item.get("volumeInfo", {})
+                if not _authors_match(book.author, info.get("authors", [])):
+                    continue
+                score, part = snap(book.title, info.get("title", ""))
+                if score > best:
+                    best, best_item = score, {**item, "_snap_title": part}
+            if best_item is not None and best >= SNAP_MIN:
+                log.info("snapped %r -> %r (similarity %.2f)", book.title, best_item["_snap_title"], best)
+                return best_item, True
         return None, reachable
 
     async def search(self, query: str, limit: int = 15) -> list[Book]:
@@ -255,17 +281,40 @@ class Catalog:
                         urls.append(url)
         return list(dict.fromkeys(urls))[:limit]
 
-    async def enrich(self, book: Book) -> Book:
-        """Match an LLM-identified book to a real catalog record. Keeps LLM data if no match."""
-        item, _ = await self.lookup(book)
+    async def check(self, book: Book) -> tuple[Book, str]:
+        """Match an LLM-identified book to a real catalog record.
+
+        Returns (book, status): "verified" when a record with the same title and author exists (the book is
+        then filled in with the record's cover, ISBN and so on), "unverified" when the catalog answered but
+        has no such book (likely a misread or invented one; returned as read, without a cover lookup), and
+        "unchecked" when the catalog couldn't be reached (returned as read).
+        """
+        item, reachable = await self.lookup(book)
         if item is None:
-            log.info("no catalog match for %r by %r; keeping LLM data", book.title, book.author)
-            return await self.with_best_cover(book)
+            status = "unverified" if reachable else "unchecked"
+            log.info("%s: %r by %r", status, book.title, book.author)
+            return (book if reachable else await self.with_best_cover(book)), status
         enriched = _volume_to_book(item, fallback=book)
         # Keep the names as read from the photo; the catalog only adds metadata.
-        enriched.title, enriched.author = book.title, book.author
+        enriched.title, enriched.author = item.get("_snap_title") or book.title, book.author
         log.info("matched %r by %r -> isbn=%s", book.title, book.author, enriched.isbn)
-        return await self.with_best_cover(enriched)
+        return await self.with_best_cover(enriched), "verified"
+
+    async def check_all(self, books: list[Book], concurrency: int = 6) -> list[tuple[Book, str]]:
+        """check() for a whole shelf. Bounded, because 60 books x 2 queries at once gets rate-limited, and a
+        rate-limited lookup comes back "unchecked", which is exactly when guardrails matter most."""
+        sem = asyncio.Semaphore(concurrency)
+
+        async def one(b: Book):
+            async with sem:
+                return await self.check(b)
+
+        return list(await asyncio.gather(*(one(b) for b in books)))
+
+    async def enrich(self, book: Book) -> Book:
+        """Like check(), but always returns the book (as read when there is no match)."""
+        book, status = await self.check(book)
+        return await self.with_best_cover(book) if status == "unverified" else book
 
     async def verify(self, book: Book) -> Book | None:
         """For recommendations: the catalog's record if the book exists, None if the catalog says it
