@@ -31,12 +31,14 @@ import com.shelfscan.app.ui.detail.BookDetailScreen
 import com.shelfscan.app.ui.discover.DiscoverScreen
 import com.shelfscan.app.ui.library.LibraryScreen
 import com.shelfscan.app.ui.scan.ScanScreen
+import com.shelfscan.app.ui.search.SearchScreen
 import com.shelfscan.app.ui.theme.ShelfScanTheme
 
 private object Routes {
     const val LIBRARY = "library?q={q}"
     const val DISCOVER = "discover?author={author}"
     const val SCAN = "scan"
+    const val SEARCH = "search"
     const val BOOK = "book/{id}"
     fun library(q: String = "") = "library?q=${Uri.encode(q)}"
     fun book(id: Long) = "book/$id"
@@ -98,7 +100,11 @@ private fun ShelfScanNav() {
                 ScanScreen(
                     onBack = { nav.popBackStack() },
                     onFinished = { nav.switchTab(Routes.library()) },
+                    onSearch = { nav.navigate(Routes.SEARCH) },
                 )
+            }
+            composable(Routes.SEARCH) {
+                SearchScreen(onBack = { nav.popBackStack() })
             }
             composable(Routes.BOOK, arguments = listOf(navArgument("id") { type = NavType.LongType })) {
                 BookDetailScreen(

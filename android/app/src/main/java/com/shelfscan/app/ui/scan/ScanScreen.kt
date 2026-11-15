@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -84,6 +85,7 @@ import com.shelfscan.app.util.ImageUtils
 fun ScanScreen(
     onBack: () -> Unit,
     onFinished: () -> Unit,
+    onSearch: () -> Unit,
     vm: ScanViewModel = viewModel(factory = ScanViewModel.Factory),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -106,7 +108,7 @@ fun ScanScreen(
             when (val step = state.step) {
                 ScanStep.Pick -> PickPhotos(
                     state.photos, vm::addPhotos, vm::removePhoto, vm::identify,
-                    onBarcode = vm::lookupBarcode, onBarcodeError = vm::showError,
+                    onBarcode = vm::lookupBarcode, onBarcodeError = vm::showError, onSearch = onSearch,
                 )
                 ScanStep.Identifying -> Identifying(state.photos.size)
                 ScanStep.LookingUp -> Busy("Looking up that book…", "Finding the title, author and cover for this ISBN.")
@@ -125,6 +127,7 @@ private fun PickPhotos(
     onIdentify: () -> Unit,
     onBarcode: (String) -> Unit,
     onBarcodeError: (String) -> Unit,
+    onSearch: () -> Unit,
 ) {
     val context = LocalContext.current
     // Google's code scanner: its own camera screen, no camera permission needed, runs on the phone.
@@ -174,21 +177,27 @@ private fun PickPhotos(
             }
         }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = {
-                scanner.startScan()
-                    .addOnSuccessListener { code -> code.rawValue?.let(onBarcode) }
-                    .addOnFailureListener { e ->
-                        onBarcodeError(
-                            if (e is MlKitException && e.errorCode == MlKitException.UNAVAILABLE)
-                                "The barcode scanner is still downloading. Try again in a minute."
-                            else "Couldn't start the barcode scanner."
-                        )
-                    }
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Icon(Icons.Filled.QrCodeScanner, null); Spacer(Modifier.width(8.dp)); Text("Scan a barcode (one book)")
+        // One book at a time: its barcode, or its title typed in.
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(
+                onClick = {
+                    scanner.startScan()
+                        .addOnSuccessListener { code -> code.rawValue?.let(onBarcode) }
+                        .addOnFailureListener { e ->
+                            onBarcodeError(
+                                if (e is MlKitException && e.errorCode == MlKitException.UNAVAILABLE)
+                                    "The barcode scanner is still downloading. Try again in a minute."
+                                else "Couldn't start the barcode scanner."
+                            )
+                        }
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(Icons.Filled.QrCodeScanner, null); Spacer(Modifier.width(8.dp)); Text("Barcode")
+            }
+            OutlinedButton(onClick = onSearch, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.Search, null); Spacer(Modifier.width(8.dp)); Text("Type a title")
+            }
         }
         Spacer(Modifier.height(16.dp))
 

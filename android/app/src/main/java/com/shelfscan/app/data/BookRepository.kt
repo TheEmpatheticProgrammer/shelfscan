@@ -10,6 +10,7 @@ import com.shelfscan.app.data.remote.IsbnRequest
 import com.shelfscan.app.data.remote.OwnedBookDto
 import com.shelfscan.app.data.remote.RecommendRequest
 import com.shelfscan.app.data.remote.RecommendationDto
+import com.shelfscan.app.data.remote.SearchRequest
 import com.shelfscan.app.data.remote.ShelfApi
 import com.shelfscan.app.data.remote.UpcomingRequest
 import com.shelfscan.app.util.ImageUtils
@@ -102,6 +103,11 @@ class BookRepository(
             dao.markCoverChecked(unchanged, now)
         }
     }
+
+    // --- Search ---
+
+    /** Books matching a typed title or author. */
+    suspend fun search(query: String): List<BookDto> = api.search(SearchRequest(query)).books
 
     // --- Barcode ---
 
