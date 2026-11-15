@@ -58,6 +58,35 @@ def _edition_key(title: str) -> str:
     return _norm(re.sub(r"\([^)]*\)|\[[^\]]*\]", "", title))
 
 
+# "The Way of Kings (The Stormlight Archive, #1)"  /  "Mistborn Book 1: The Final Empire"
+_SERIES_SUFFIX = re.compile(r"\s*[(\[][^)\]]*?(?:#|\bbook|\bvol\.?|\bvolume|\bpart)\s*\d+[^)\]]*[)\]]\s*$", re.I)
+_SERIES_PREFIX = re.compile(r"^[^:]{0,60}?\b(?:book|vol\.?|volume|part|#)\s*\d+\s*[:\-\u2013\u2014]\s*", re.I)
+
+
+def title_variants(title: str) -> list[str]:
+    """The title as read, then cleaner forms a catalog is more likely to know: without a series suffix,
+    without a "Series Book 1:" prefix, and the part after a colon. Never the part before a colon:
+    'Mistborn: The Well of Ascension' must not turn into 'Mistborn', which is a different book."""
+    out: list[str] = []
+
+    def add(t: str) -> None:
+        t = t.strip(" -:\u2013\u2014")
+        if len(t) >= 2 and t.lower() not in (o.lower() for o in out):
+            out.append(t)
+
+    add(title)
+    no_suffix = _SERIES_SUFFIX.sub("", title)
+    add(no_suffix)
+    add(_SERIES_PREFIX.sub("", no_suffix))
+    if ":" in no_suffix:
+        add(no_suffix.split(":", 1)[1])
+    return out
+
+
+def is_unknown(author: str | None) -> bool:
+    return not author or not author.strip() or author.strip().lower() == "unknown"
+
+
 def _parse_date(s: str | None) -> date | None:
     if not s:
         return None
@@ -140,18 +169,59 @@ class Catalog:
             return None
 
     async def lookup(self, book: Book) -> tuple[dict | None, bool]:
-        """Find the catalog record for a title + author. Returns (volume or None, catalog_reachable)."""
+        """Find the catalog record for a title + author. Returns (volume or None, catalog_reachable).
+        Tries cleaner forms of the title when the one read off the spine finds nothing, and searches by
+        title alone when the author couldn't be read."""
         reachable = False
-        for q in (f'intitle:"{book.title}" inauthor:"{book.author}"', f"{book.title} {book.author}"):
-            items = await self._search(q)
-            if items is None:
-                continue
-            reachable = True
-            for item in items:
-                info = item.get("volumeInfo", {})
-                if _titles_match(book.title, info.get("title", "")) and _authors_match(book.author, info.get("authors", [])):
-                    return item, True
+        unknown = is_unknown(book.author)
+        for title in title_variants(book.title):
+            queries = [f'intitle:"{title}"'] if unknown else [f'intitle:"{title}" inauthor:"{book.author}"', f"{title} {book.author}"]
+            for q in queries:
+                items = await self._search(q)
+                if items is None:
+                    continue
+                reachable = True
+                for item in items:
+                    info = item.get("volumeInfo", {})
+                    if _titles_match(title, info.get("title", "")) and _authors_match(book.author, info.get("authors", [])):
+                        return item, True
         return None, reachable
+
+    async def by_isbn(self, isbn: str) -> Book | None:
+        """The book with this ISBN (from a barcode): Google Books first, then Open Library."""
+        items = await self._search(f"isbn:{isbn}", maxResults=1)
+        if items:
+            book = _volume_to_book(items[0])
+            book.isbn = book.isbn or isbn
+            return await self.with_best_cover(book)
+        doc = await self.ol.by_isbn(isbn)
+        if not doc or not doc.get("title"):
+            return None
+        work_cover = doc.get("cover_i")
+        year = doc.get("first_publish_year")
+        return Book(
+            title=doc["title"],
+            author=", ".join(doc.get("author_name") or []) or "Unknown",
+            isbn=isbn,
+            cover_url=f"https://covers.openlibrary.org/b/id/{work_cover}-L.jpg" if work_cover else None,
+            published_date=str(year) if year else None,
+            page_count=doc.get("number_of_pages_median"),
+        )
+
+    async def cover_candidates(self, book: Book, limit: int = 9) -> list[str]:
+        """Several plausible covers for one book, for the user to choose from: Open Library first
+        (large and clean), then Google Books. Different editions of the same title are fine here."""
+        urls: list[str] = []
+        urls += await self.ol.cover_candidates(book.title, book.author, book.isbn)
+        unknown = is_unknown(book.author)
+        for title in title_variants(book.title)[:2]:
+            q = f'intitle:"{title}"' if unknown else f'intitle:"{title}" inauthor:"{book.author}"'
+            for item in await self._search(q, maxResults=10) or []:
+                info = item.get("volumeInfo", {})
+                if _titles_match(title, info.get("title", "")) and _authors_match(book.author, info.get("authors", [])):
+                    if url := _google_cover(info.get("imageLinks") or {}):
+                        urls.append(url)
+        return list(dict.fromkeys(urls))[:limit]
 
     async def enrich(self, book: Book) -> Book:
         """Match an LLM-identified book to a real catalog record. Keeps LLM data if no match."""

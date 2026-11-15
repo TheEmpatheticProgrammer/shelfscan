@@ -16,6 +16,10 @@ from .catalog import Catalog, _authors_match, _titles_match, _volume_to_book
 from .llm import LLM, PROVIDER, RECOMMEND_PROMPT_VERSION, TEXT_MODEL, create_llm
 from .models import (
     Book,
+    BookRef,
+    CandidatesResponse,
+    IsbnRequest,
+    IsbnResponse,
     CoverResult,
     CoversRequest,
     CoversResponse,
@@ -233,6 +237,24 @@ async def covers(req: CoversRequest):
         return CoverResult(cover_url=found.cover_url, isbn=found.isbn or ref.isbn)
 
     return CoversResponse(covers=list(await asyncio.gather(*(one(r) for r in req.books))))
+
+
+@app.post("/covers/candidates", response_model=CandidatesResponse, dependencies=[Depends(check_token)])
+async def cover_candidates(ref: BookRef):
+    """Covers to choose from when the automatic one is wrong or missing."""
+    book = Book(title=ref.title, author=ref.author, isbn=ref.isbn)
+    return CandidatesResponse(candidates=await state.catalog.cover_candidates(book))
+
+
+@app.post("/lookup/isbn", response_model=IsbnResponse, dependencies=[Depends(check_token)])
+async def lookup_isbn(req: IsbnRequest):
+    """The book behind a scanned barcode."""
+    isbn = re.sub(r"[^0-9Xx]", "", req.isbn).upper()
+    if len(isbn) not in (10, 13):
+        raise HTTPException(400, "Not an ISBN: expected 10 or 13 digits")
+    book = await state.catalog.by_isbn(isbn)
+    log.info("ISBN %s -> %s", isbn, f"{book.title} / {book.author}" if book else "not found")
+    return IsbnResponse(book=book)
 
 
 @app.post("/book/details", response_model=DetailsResponse, dependencies=[Depends(check_token)])

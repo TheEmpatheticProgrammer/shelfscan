@@ -83,3 +83,15 @@ class DetailsResponse(BaseModel):
     synopsis: str | None = None  # 2-3 spoiler-free sentences condensed from the description
     published_date: str | None = None
     page_count: int | None = None
+
+
+class CandidatesResponse(BaseModel):
+    candidates: list[str]  # cover URLs, best first
+
+
+class IsbnRequest(BaseModel):
+    isbn: str
+
+
+class IsbnResponse(BaseModel):
+    book: Book | None = None  # None when no catalog knows this ISBN
