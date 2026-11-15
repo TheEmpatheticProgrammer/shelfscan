@@ -86,6 +86,15 @@ class OpenLibrary:
         self._cache[cache_key] = found
         return found
 
+    async def search(self, query: str, limit: int = 15) -> list[dict]:
+        """Free-text search; only results with a title."""
+        if not enabled():
+            return []
+        data = await self._get(SEARCH_URL, {
+            "q": query, "limit": limit, "fields": "title,author_name,cover_i,first_publish_year,isbn",
+        })
+        return [d for d in (data or {}).get("docs", []) if d.get("title")]
+
     async def by_isbn(self, isbn: str) -> dict | None:
         """Raw search result for one ISBN (title, authors, cover id, first year, typical page count)."""
         if not enabled():

@@ -187,6 +187,38 @@ class Catalog:
                         return item, True
         return None, reachable
 
+    async def search(self, query: str, limit: int = 15) -> list[Book]:
+        """Books matching what someone typed (title, author or both), one per title, best match first.
+        Google Books first; Open Library when Google is unreachable or finds nothing."""
+        items = await self._search(query, maxResults=30, orderBy="relevance") or []
+        seen: set[str] = set()
+        books: list[Book] = []
+        for item in items:
+            info = item.get("volumeInfo", {})
+            title, authors = info.get("title") or "", info.get("authors") or []
+            if not title or not authors or _NOT_A_NOVEL.search(f"{title} {info.get('subtitle', '')}"):
+                continue
+            key = _edition_key(title) + "|" + _norm(authors[0])
+            if key in seen:
+                continue
+            seen.add(key)
+            books.append(_volume_to_book(item))
+        if not books:
+            for doc in await self.ol.search(query, limit=limit):
+                key = _edition_key(doc["title"]) + "|" + _norm((doc.get("author_name") or [""])[0])
+                if key in seen:
+                    continue
+                seen.add(key)
+                cover = doc.get("cover_i")
+                year = doc.get("first_publish_year")
+                books.append(Book(
+                    title=doc["title"], author=", ".join(doc.get("author_name") or []) or "Unknown",
+                    isbn=(doc.get("isbn") or [None])[0],
+                    cover_url=f"https://covers.openlibrary.org/b/id/{cover}-L.jpg" if cover else None,
+                    published_date=str(year) if year else None,
+                ))
+        return books[:limit]
+
     async def by_isbn(self, isbn: str) -> Book | None:
         """The book with this ISBN (from a barcode): Google Books first, then Open Library."""
         items = await self._search(f"isbn:{isbn}", maxResults=1)

@@ -72,6 +72,8 @@ data class BookDto(
 @Serializable data class UpcomingResponse(val books: List<BookDto>)
 @Serializable data class CandidatesResponse(val candidates: List<String> = emptyList())
 @Serializable data class IsbnRequest(val isbn: String)
+@Serializable data class SearchRequest(val query: String, val limit: Int = 15)
+@Serializable data class SearchResponse(val books: List<BookDto> = emptyList())
 @Serializable data class IsbnResponse(val book: BookDto? = null)
 
 interface ShelfApi {
@@ -93,6 +95,9 @@ interface ShelfApi {
 
     @POST("covers/candidates")
     suspend fun coverCandidates(@Body body: BookRefDto): CandidatesResponse
+
+    @POST("search")
+    suspend fun search(@Body body: SearchRequest): SearchResponse
 
     @POST("lookup/isbn")
     suspend fun lookupIsbn(@Body body: IsbnRequest): IsbnResponse

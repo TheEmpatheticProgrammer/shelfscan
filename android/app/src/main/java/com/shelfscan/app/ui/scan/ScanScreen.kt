@@ -1,6 +1,7 @@
 package com.shelfscan.app.ui.scan
 
 import android.net.Uri
+import android.text.format.DateUtils
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,7 +35,11 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -52,6 +57,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -77,6 +83,7 @@ import com.google.mlkit.common.MlKitException
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.shelfscan.app.data.PendingScan
 import com.shelfscan.app.util.ImageUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -84,9 +91,11 @@ import com.shelfscan.app.util.ImageUtils
 fun ScanScreen(
     onBack: () -> Unit,
     onFinished: () -> Unit,
+    onSearch: () -> Unit,
     vm: ScanViewModel = viewModel(factory = ScanViewModel.Factory),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val pending by vm.pending.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
 
     LaunchedEffect(state.error) {
@@ -106,8 +115,10 @@ fun ScanScreen(
             when (val step = state.step) {
                 ScanStep.Pick -> PickPhotos(
                     state.photos, vm::addPhotos, vm::removePhoto, vm::identify,
-                    onBarcode = vm::lookupBarcode, onBarcodeError = vm::showError,
+                    onBarcode = vm::lookupBarcode, onBarcodeError = vm::showError, onSearch = onSearch,
+                    pending = pending, onReviewPending = { vm.reviewPending(it) }, onDiscardPending = { vm.discardPending(it) },
                 )
+                is ScanStep.Queued -> Queued(step.photoCount, onScanMore = vm::reset, onDone = onFinished)
                 ScanStep.Identifying -> Identifying(state.photos.size)
                 ScanStep.LookingUp -> Busy("Looking up that book…", "Finding the title, author and cover for this ISBN.")
                 is ScanStep.Review -> Review(step, vm::toggle, vm::edit, vm::save, onRetake = vm::reset)
@@ -125,6 +136,10 @@ private fun PickPhotos(
     onIdentify: () -> Unit,
     onBarcode: (String) -> Unit,
     onBarcodeError: (String) -> Unit,
+    onSearch: () -> Unit,
+    pending: List<PendingScan>,
+    onReviewPending: (PendingScan) -> Unit,
+    onDiscardPending: (PendingScan) -> Unit,
 ) {
     val context = LocalContext.current
     // Google's code scanner: its own camera screen, no camera permission needed, runs on the phone.
@@ -147,6 +162,10 @@ private fun PickPhotos(
     ) { uris -> if (uris.isNotEmpty()) onAdd(uris) }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
+        if (pending.isNotEmpty()) {
+            PendingScans(pending, onReviewPending, onDiscardPending)
+            Spacer(Modifier.height(16.dp))
+        }
         Text(
             "Snap covers or a row of spines. Up to $MAX_PHOTOS photos at a time — good light and straight-on shots work best.",
             style = MaterialTheme.typography.bodyMedium,
@@ -174,21 +193,27 @@ private fun PickPhotos(
             }
         }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = {
-                scanner.startScan()
-                    .addOnSuccessListener { code -> code.rawValue?.let(onBarcode) }
-                    .addOnFailureListener { e ->
-                        onBarcodeError(
-                            if (e is MlKitException && e.errorCode == MlKitException.UNAVAILABLE)
-                                "The barcode scanner is still downloading. Try again in a minute."
-                            else "Couldn't start the barcode scanner."
-                        )
-                    }
-            },
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Icon(Icons.Filled.QrCodeScanner, null); Spacer(Modifier.width(8.dp)); Text("Scan a barcode (one book)")
+        // One book at a time: its barcode, or its title typed in.
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(
+                onClick = {
+                    scanner.startScan()
+                        .addOnSuccessListener { code -> code.rawValue?.let(onBarcode) }
+                        .addOnFailureListener { e ->
+                            onBarcodeError(
+                                if (e is MlKitException && e.errorCode == MlKitException.UNAVAILABLE)
+                                    "The barcode scanner is still downloading. Try again in a minute."
+                                else "Couldn't start the barcode scanner."
+                            )
+                        }
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(Icons.Filled.QrCodeScanner, null); Spacer(Modifier.width(8.dp)); Text("Barcode")
+            }
+            OutlinedButton(onClick = onSearch, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Filled.Search, null); Spacer(Modifier.width(8.dp)); Text("Type a title")
+            }
         }
         Spacer(Modifier.height(16.dp))
 
@@ -239,6 +264,78 @@ private fun PickPhotos(
         ) {
             Text(if (photos.size > 1) "Identify books in ${photos.size} photos" else "Identify books")
         }
+    }
+}
+
+/** Scans saved while the server was unreachable: read ones can be reviewed, any can be thrown away. */
+@Composable
+private fun PendingScans(scans: List<PendingScan>, onReview: (PendingScan) -> Unit, onDiscard: (PendingScan) -> Unit) {
+    var confirming by remember { mutableStateOf<PendingScan?>(null) }
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+        Column(Modifier.padding(vertical = 4.dp)) {
+            scans.forEach { scan ->
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
+                        Text(
+                            "${scan.photoCount} photo${if (scan.photoCount == 1) "" else "s"} \u00b7 " +
+                                DateUtils.getRelativeTimeSpanString(scan.createdAt),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                        Text(
+                            when {
+                                scan.isReady -> "Ready to review \u00b7 ${scan.books.size} book${if (scan.books.size == 1) "" else "s"} found"
+                                scan.isFailed -> "Couldn't be read${scan.lastError?.let { ": $it" }.orEmpty()}"
+                                else -> "Waiting for the server"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                    }
+                    if (scan.isReady) TextButton(onClick = { onReview(scan) }) { Text("Review") }
+                    IconButton(onClick = { confirming = scan }) {
+                        Icon(Icons.Outlined.Delete, "Discard", tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                    }
+                }
+            }
+        }
+    }
+    confirming?.let { scan ->
+        AlertDialog(
+            onDismissRequest = { confirming = null },
+            title = { Text("Discard this scan?") },
+            text = { Text("Its ${scan.photoCount} photo${if (scan.photoCount == 1) "" else "s"} will be deleted.") },
+            confirmButton = { TextButton(onClick = { onDiscard(scan); confirming = null }) { Text("Discard") } },
+            dismissButton = { TextButton(onClick = { confirming = null }) { Text("Keep") } },
+        )
+    }
+}
+
+/** The server couldn't be reached, so the photos were kept for later instead of failing. */
+@Composable
+private fun Queued(photoCount: Int, onScanMore: () -> Unit, onDone: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.size(72.dp)) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Outlined.CloudUpload, null, Modifier.size(36.dp), tint = MaterialTheme.colorScheme.onSecondaryContainer)
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        Text("Saved for later", style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Can't reach the ShelfScan server right now. Your ${if (photoCount == 1) "photo is" else "$photoCount photos are"} " +
+                "saved and will be read automatically once it's back. They'll wait here under Add books for you to review.",
+            textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(24.dp))
+        Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Done") }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = onScanMore, modifier = Modifier.fillMaxWidth()) { Text("Scan more") }
     }
 }
 

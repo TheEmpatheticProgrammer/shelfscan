@@ -27,6 +27,16 @@ interface BookDao {
     @Query("SELECT * FROM books")
     suspend fun all(): List<Book>
 
+    @Query("SELECT * FROM books WHERE id = :id")
+    suspend fun byId(id: Long): Book?
+
+    /** Books whose page details haven't been looked up yet, newest first. */
+    @Query("SELECT * FROM books WHERE synopsis IS NULL ORDER BY addedAt DESC LIMIT :limit")
+    suspend fun missingDetails(limit: Int): List<Book>
+
+    @Query("SELECT * FROM books WHERE addedAt >= :since ORDER BY addedAt DESC")
+    suspend fun addedSince(since: Long): List<Book>
+
     @Query("SELECT matchKey FROM books")
     suspend fun allKeys(): List<String>
 
@@ -45,6 +55,15 @@ interface BookDao {
 
     @Query("UPDATE books SET readingStatus = :status WHERE id = :id")
     suspend fun setStatus(id: Long, status: String)
+
+    @Query("UPDATE books SET readingStatus = :status WHERE id IN (:ids)")
+    suspend fun setStatusMany(ids: List<Long>, status: String)
+
+    @Query("SELECT * FROM books WHERE id IN (:ids)")
+    suspend fun byIds(ids: List<Long>): List<Book>
+
+    @Query("DELETE FROM books WHERE id IN (:ids)")
+    suspend fun deleteMany(ids: List<Long>)
 
     @Query("UPDATE books SET coverUrl = :url, coverCheckedAt = :checkedAt WHERE id = :id")
     suspend fun setCover(id: Long, url: String?, checkedAt: Long)

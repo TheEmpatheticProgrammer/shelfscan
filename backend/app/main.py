@@ -20,6 +20,8 @@ from .models import (
     CandidatesResponse,
     IsbnRequest,
     IsbnResponse,
+    SearchRequest,
+    SearchResponse,
     CoverResult,
     CoversRequest,
     CoversResponse,
@@ -244,6 +246,13 @@ async def cover_candidates(ref: BookRef):
     """Covers to choose from when the automatic one is wrong or missing."""
     book = Book(title=ref.title, author=ref.author, isbn=ref.isbn)
     return CandidatesResponse(candidates=await state.catalog.cover_candidates(book))
+
+
+@app.post("/search", response_model=SearchResponse, dependencies=[Depends(check_token)])
+async def search(req: SearchRequest):
+    """Find a book by typing its title or author (for adding one without a photo)."""
+    books = await state.catalog.search(req.query.strip(), req.limit)
+    return SearchResponse(books=books)
 
 
 @app.post("/lookup/isbn", response_model=IsbnResponse, dependencies=[Depends(check_token)])

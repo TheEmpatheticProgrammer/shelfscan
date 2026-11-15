@@ -31,12 +31,14 @@ import com.shelfscan.app.ui.detail.BookDetailScreen
 import com.shelfscan.app.ui.discover.DiscoverScreen
 import com.shelfscan.app.ui.library.LibraryScreen
 import com.shelfscan.app.ui.scan.ScanScreen
+import com.shelfscan.app.ui.search.SearchScreen
 import com.shelfscan.app.ui.theme.ShelfScanTheme
 
 private object Routes {
     const val LIBRARY = "library?q={q}"
     const val DISCOVER = "discover?author={author}"
     const val SCAN = "scan"
+    const val SEARCH = "search"
     const val BOOK = "book/{id}"
     fun library(q: String = "") = "library?q=${Uri.encode(q)}"
     fun book(id: Long) = "book/$id"
@@ -97,8 +99,12 @@ private fun ShelfScanNav() {
             composable(Routes.SCAN) {
                 ScanScreen(
                     onBack = { nav.popBackStack() },
-                    onFinished = { nav.switchTab(Routes.library()) },
+                    onFinished = { nav.backToLibrary() },
+                    onSearch = { nav.navigate(Routes.SEARCH) },
                 )
+            }
+            composable(Routes.SEARCH) {
+                SearchScreen(onBack = { nav.popBackStack() })
             }
             composable(Routes.BOOK, arguments = listOf(navArgument("id") { type = NavType.LongType })) {
                 BookDetailScreen(
@@ -120,6 +126,15 @@ private fun ShelfScanNav() {
             }
         }
     }
+}
+
+/**
+ * Leave a flow (Add books) for the library. The Library is the first screen, so it's always underneath:
+ * going back to it is reliable, whereas "navigating to" the first screen with the tab bar's save/restore
+ * options can hand back the screen being left, which is why View library seemed to do nothing.
+ */
+private fun NavHostController.backToLibrary() {
+    if (!popBackStack(Routes.LIBRARY, inclusive = false)) switchTab(Routes.library())
 }
 
 private fun NavHostController.switchTab(route: String) = navigate(route) {

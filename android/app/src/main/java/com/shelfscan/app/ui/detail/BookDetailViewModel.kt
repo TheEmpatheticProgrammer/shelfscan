@@ -100,15 +100,25 @@ class BookDetailViewModel(private val repo: BookRepository, bookId: Long) : View
         _extras.update { it.copy(synopsis = outcome) }
     }
 
+    /**
+     * Show the copy kept on the phone straight away (usually prefetched in the background). Only ask the
+     * server when there's no copy, or it's over a week old, and then keep showing the old one meanwhile.
+     */
     private suspend fun loadSimilar(b: Book) {
-        _extras.update { it.copy(similarState = Part.Loading) }
+        val saved = repo.cachedSimilar(b)
+        if (saved != null) {
+            _extras.update { it.copy(similar = saved.data, similarState = Part.Ready) }
+            if (repo.isFresh(saved.savedAt)) return
+        } else {
+            _extras.update { it.copy(similarState = Part.Loading) }
+        }
         try {
-            val recs = repo.similarTo(b)
+            val recs = repo.similarTo(b, refresh = true).data // an offline copy is fine on the book page
             _extras.update { it.copy(similar = recs, similarState = Part.Ready) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            _extras.update { it.copy(similarState = Part.Failed) }
+            if (saved == null) _extras.update { it.copy(similarState = Part.Failed) } // else: keep the old copy
         }
     }
 
