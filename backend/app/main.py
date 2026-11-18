@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from .cache import TTL_S, Cache, NullCache, SingleFlight, create_cache, recommendations_key
 from .guard import suspicious_reason
 from .identity import merge_duplicates
-from .catalog import Catalog, _authors_match, _titles_match, _volume_to_book
+from .catalog import Catalog, _authors_match, _titles_match, _volume_to_book, guess_language, volume_language
 from .llm import LLM, PROVIDER, RECOMMEND_PROMPT_VERSION, TEXT_MODEL, create_llm
 from .models import (
     Book,
@@ -306,7 +306,8 @@ async def book_details(req: DetailsRequest):
     given = Book(title=req.title, author=req.author, isbn=req.isbn, description=req.description)
     item, _ = await state.catalog.lookup(given)
     book = _volume_to_book(item, fallback=given) if item else given
-    work = await state.catalog.ol.find(req.title, req.author, book.isbn)
+    work = await state.catalog.ol.find(req.title, req.author, book.isbn,
+                                       lang=volume_language(item) or guess_language(req.title))
     description = _plain(req.description or book.description or "")
     if not description and work:
         description = _plain(await state.catalog.ol.description(work) or "")

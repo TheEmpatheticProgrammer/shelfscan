@@ -22,18 +22,64 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
-def _titles_match(want: str, got: str) -> bool:
+# Books *about* a book, or other formats of it, whose catalog titles start with the book's own title
+# ("Dune: The Graphic Novel", "The Great Gatsby (SparkNotes Literature Guide)"). Their covers are wrong.
+_DERIVATIVE = re.compile(
+    r"\b(summary|study guide|sparknotes|cliffsnotes|cliff'?s notes|literature guide|reader'?s guide|"
+    r"teacher'?s guide|analysis|workbook|graphic novel|manga|comic|coloring|colouring|companion|quiz|"
+    r"trivia|screenplay|movie tie-?in|the official guide|notes on|abridged|audio ?book|box(ed)? set|"
+    r"boxset|collection|omnibus|calendar|journal|resumen|gu[ií]a de estudio|novela gr[aá]fica)\b", re.I)
+
+
+def _titles_match(want: str, got: str, strict: bool = False) -> bool:
     """Same title, allowing an edition suffix ("Dune" ~ "Dune (Deluxe Edition)"), but not a
-    different book that shares a prefix ("Dune" !~ "Dune Messiah")."""
+    different book that shares a prefix ("Dune" !~ "Dune Messiah"), nor a guide, summary or
+    graphic-novel version of it. strict: no prefix allowance (used when there's no author to confirm)."""
     a, b = _norm(want), _norm(got)
     if not a or not b:
         return False
+    for m in _DERIVATIVE.finditer(got):
+        if _norm(m.group(0)) not in a:
+            return False
     # Catalog titles often carry a subtitle the spine doesn't show.
     main_title = _norm(re.split(r"[:(;]|, or ", got, maxsplit=1)[0])
     if a in (b, main_title):
         return True
+    if strict:
+        return False
     short, long_ = sorted((a, b), key=len)
     return long_.startswith(short) and len(short) / len(long_) >= 0.75
+
+
+_SPANISH_WORDS = {"el", "la", "los", "las", "del", "y", "un", "una", "que", "por", "para", "con", "sin", "sobre",
+                  "entre", "hacia", "cien", "años", "historia", "vida", "amor", "noche", "mundo", "como"}
+_ENGLISH_WORDS = {"the", "of", "and", "a", "an", "to", "in", "on", "for", "with", "my", "your", "how", "what"}
+
+
+def guess_language(title: str) -> str | None:
+    """ISO 639-1 code of the language a title is written in, when it's clear: 'es' for Spanish, 'en' for
+    English, else None. Used to pick a cover in the same language as the copy on the shelf."""
+    words = re.findall(r"[^\W\d_]+", title.lower())
+    if not words:
+        return None
+    if re.search(r"[ñ¿¡]", title.lower()) or sum(w in _SPANISH_WORDS for w in words) > sum(w in _ENGLISH_WORDS for w in words):
+        return "es"
+    if title.isascii():
+        return "en"
+    return None
+
+
+def volume_language(item: dict | None) -> str | None:
+    lang = ((item or {}).get("volumeInfo") or {}).get("language")
+    return lang.split("-")[0].lower() if isinstance(lang, str) and lang else None
+
+
+def _match(want_title: str, want_author: str, got_title: str, got_authors: list[str]) -> bool:
+    """A catalog record is this book: the title matches and, when the author is known, so does the author.
+    Without an author, only the exact title counts."""
+    if is_unknown(want_author):
+        return _titles_match(want_title, got_title, strict=True)
+    return _titles_match(want_title, got_title) and _authors_match(want_author, got_authors)
 
 
 def _authors_match(want: str, got: list[str]) -> bool:
@@ -145,9 +191,10 @@ class Catalog:
         self.failures = 0  # lookups that couldn't reach Google Books; lets callers avoid caching degraded answers
         self.ol = OpenLibrary(client)
 
-    async def with_best_cover(self, book: Book) -> Book:
-        """Swap in Open Library's large cover when it has one for this exact title and author."""
-        work = await self.ol.find(book.title, book.author, book.isbn)
+    async def with_best_cover(self, book: Book, lang: str | None = None) -> Book:
+        """Swap in Open Library's large cover when it has one for an edition with this title and author, in
+        the book's language (lang, else guessed from the title). Otherwise the cover stays as it is."""
+        work = await self.ol.find(book.title, book.author, book.isbn, lang=lang or guess_language(book.title))
         if work and work.cover_id:
             book.cover_url = work.cover_url("L")
         return book
@@ -175,6 +222,7 @@ class Catalog:
         title alone when the author couldn't be read."""
         reachable = False
         unknown = is_unknown(book.author)
+        lang = guess_language(book.title)
         pool: list[dict] = []  # everything the catalog returned for this book, for the near-miss pass below
         queries_run: set[str] = set()
         for title in title_variants(book.title):
@@ -186,9 +234,12 @@ class Catalog:
                     continue
                 reachable = True
                 pool += items
+                # Editions in the title's language first, so the cover and details match the copy on the shelf.
+                if lang:
+                    items = sorted(items, key=lambda it: volume_language(it) not in (None, lang))
                 for item in items:
                     info = item.get("volumeInfo", {})
-                    if _titles_match(title, info.get("title", "")) and _authors_match(book.author, info.get("authors", [])):
+                    if _match(title, book.author, info.get("title", ""), info.get("authors", [])):
                         return item, True
         # No exact match. The model may have misread a word or two ("Shadow of Wars" for "Shadow Wars"), so
         # accept a catalog title that is nearly the same, but only with a readable author that agrees, and
@@ -205,6 +256,8 @@ class Catalog:
                 info = item.get("volumeInfo", {})
                 if not _authors_match(book.author, info.get("authors", [])):
                     continue
+                if _DERIVATIVE.search(info.get("title", "")) and not _DERIVATIVE.search(book.title):
+                    continue  # a guide or adaptation of the book, not the book
                 score, part = snap(book.title, info.get("title", ""))
                 if score > best:
                     best, best_item = score, {**item, "_snap_title": part}
@@ -217,6 +270,9 @@ class Catalog:
         """Books matching what someone typed (title, author or both), one per title, best match first.
         Google Books first; Open Library when Google is unreachable or finds nothing."""
         items = await self._search(query, maxResults=30, orderBy="relevance") or []
+        lang = guess_language(query)
+        if lang:  # editions in the language of the query first ("Dune" in English before "Dune" in Spanish)
+            items = sorted(items, key=lambda it: volume_language(it) not in (None, lang))
         seen: set[str] = set()
         books: list[Book] = []
         for item in items:
@@ -230,7 +286,7 @@ class Catalog:
             seen.add(key)
             books.append(_volume_to_book(item))
         if not books:
-            for doc in await self.ol.search(query, limit=limit):
+            for doc in await self.ol.search(query, limit=limit, lang=lang):
                 key = _edition_key(doc["title"]) + "|" + _norm((doc.get("author_name") or [""])[0])
                 if key in seen:
                     continue
@@ -250,8 +306,8 @@ class Catalog:
         items = await self._search(f"isbn:{isbn}", maxResults=1)
         if items:
             book = _volume_to_book(items[0])
-            book.isbn = book.isbn or isbn
-            return await self.with_best_cover(book)
+            book.isbn = isbn  # the scanned edition, so the cover is that edition's
+            return await self.with_best_cover(book, volume_language(items[0]))
         doc = await self.ol.by_isbn(isbn)
         if not doc or not doc.get("title"):
             return None
@@ -276,7 +332,7 @@ class Catalog:
             q = f'intitle:"{title}"' if unknown else f'intitle:"{title}" inauthor:"{book.author}"'
             for item in await self._search(q, maxResults=10) or []:
                 info = item.get("volumeInfo", {})
-                if _titles_match(title, info.get("title", "")) and _authors_match(book.author, info.get("authors", [])):
+                if _match(title, book.author, info.get("title", ""), info.get("authors", [])):
                     if url := _google_cover(info.get("imageLinks") or {}):
                         urls.append(url)
         return list(dict.fromkeys(urls))[:limit]
@@ -298,7 +354,7 @@ class Catalog:
         # Keep the names as read from the photo; the catalog only adds metadata.
         enriched.title, enriched.author = item.get("_snap_title") or book.title, book.author
         log.info("matched %r by %r -> isbn=%s", book.title, book.author, enriched.isbn)
-        return await self.with_best_cover(enriched), "verified"
+        return await self.with_best_cover(enriched, volume_language(item)), "verified"
 
     async def check_all(self, books: list[Book], concurrency: int = 6) -> list[tuple[Book, str]]:
         """check() for a whole shelf. Bounded, because 60 books x 2 queries at once gets rate-limited, and a
@@ -321,7 +377,7 @@ class Catalog:
         doesn't (a likely invented title). If the catalog can't be reached, the book is kept as is."""
         item, reachable = await self.lookup(book)
         if item is not None:
-            return await self.with_best_cover(_volume_to_book(item, fallback=book))
+            return await self.with_best_cover(_volume_to_book(item, fallback=book), volume_language(item))
         if not reachable:
             return book
         log.info("dropping recommendation not found in catalog: %r by %r", book.title, book.author)
