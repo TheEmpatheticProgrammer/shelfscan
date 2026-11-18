@@ -42,6 +42,7 @@ import androidx.compose.material.icons.outlined.CloudDone
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.FileUpload
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -103,6 +104,7 @@ fun LibraryScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var confirmDelete by remember { mutableStateOf(false) }
+    var sharing by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         vm.notices.collect { n ->
@@ -146,6 +148,7 @@ fun LibraryScreen(
                     state,
                     onSort = vm::setSort,
                     onFilter = vm::setFilter,
+                    onShare = { sharing = true },
                     onExport = { exporter.launch("shelfscan-library-${LocalDate.now()}.json") },
                     // Some file managers label .json files as plain text or generic binary.
                     onImport = { importer.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
@@ -200,6 +203,8 @@ fun LibraryScreen(
         }
     }
 
+    if (sharing) ShelfieDialog(loadBooks = vm::allBooks, onDismiss = { sharing = false })
+
     if (confirmDelete) {
         val n = state.selected.size
         AlertDialog(
@@ -217,6 +222,7 @@ private fun Header(
     state: LibraryState,
     onSort: (SortBy) -> Unit,
     onFilter: (StatusFilter) -> Unit,
+    onShare: () -> Unit,
     onExport: () -> Unit,
     onImport: () -> Unit,
 ) {
@@ -231,7 +237,10 @@ private fun Header(
                 )
             }
         }
-        if (state.totalCount > 0) SortFilterMenu(state.options, onSort, onFilter)
+        if (state.totalCount > 0) {
+            IconButton(onClick = onShare) { Icon(Icons.Outlined.Share, "Share my shelf") }
+            SortFilterMenu(state.options, onSort, onFilter)
+        }
         LibraryMenu(canExport = state.totalCount > 0, onExport = onExport, onImport = onImport)
     }
 }

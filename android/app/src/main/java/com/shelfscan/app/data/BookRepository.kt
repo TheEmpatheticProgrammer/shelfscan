@@ -11,6 +11,8 @@ import com.shelfscan.app.data.remote.OwnedBookDto
 import com.shelfscan.app.data.remote.RecommendRequest
 import com.shelfscan.app.data.remote.RecommendationDto
 import com.shelfscan.app.data.remote.SearchRequest
+import com.shelfscan.app.data.remote.SeriesGapDto
+import com.shelfscan.app.data.remote.SeriesRequest
 import com.shelfscan.app.data.remote.ShelfApi
 import com.shelfscan.app.data.remote.UpcomingRequest
 import com.shelfscan.app.util.ImageUtils
@@ -140,6 +142,14 @@ class BookRepository(
         } else {
             wishlistDao.insertAll(listOf(book.toWishlistItem(reason)))
         }
+    }
+
+    /** Save several books to Want to read at once, skipping any already there. Returns how many were added. */
+    suspend fun addToWantToRead(items: List<Pair<BookDto, String?>>): Int {
+        val saved = wishlistDao.all().map { it.matchKey }.toSet()
+        val fresh = items.distinctBy { it.first.matchKey }.filter { it.first.matchKey !in saved }
+        if (fresh.isNotEmpty()) wishlistDao.insertAll(fresh.map { (book, reason) -> book.toWishlistItem(reason) })
+        return fresh.size
     }
 
     /** "I have this book": it moves from Want to read into the library. */
@@ -378,6 +388,14 @@ class BookRepository(
             .entries.sortedByDescending { it.value }.map { it.key }.take(40)
         if (authors.isEmpty()) return Fetched(emptyList())
         return withOfflineCopy("upcoming", ListSerializer(BookDto.serializer())) { api.upcoming(UpcomingRequest(authors)).books }
+    }
+
+    /** Series you own part of, with the published volumes you're missing. refresh skips the server's cache. */
+    suspend fun seriesGaps(refresh: Boolean = false): Fetched<List<SeriesGapDto>> {
+        val owned = dao.all()
+        if (owned.isEmpty()) return Fetched(emptyList())
+        val body = SeriesRequest(owned.take(500).map { OwnedBookDto(it.title, it.author, it.genres) }, refresh)
+        return withOfflineCopy("series", ListSerializer(SeriesGapDto.serializer())) { api.seriesGaps(body).series }
     }
 
     /**

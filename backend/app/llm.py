@@ -89,6 +89,37 @@ RECOMMEND_TOOL = {
 }
 
 
+SERIES_TOOL = {
+    "name": "report_series",
+    "description": "Report the numbered series the user's books belong to, with every published main volume.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "series": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "author": {"type": "string"},
+                        "volumes": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"number": {"type": "integer"}, "title": {"type": "string"}},
+                                "required": ["number", "title"],
+                            },
+                        },
+                    },
+                    "required": ["name", "author", "volumes"],
+                },
+            }
+        },
+        "required": ["series"],
+    },
+}
+
+
 SINGLE_PHOTO_PROMPT = """This photo shows physical books the user owns: covers, spines on a shelf, or a stack.
 Identify every distinct book whose title you can read. Copy each title exactly as printed; never invent or
 complete a title you can't fully see. You may supply the author when only the title is visible and you are
@@ -173,11 +204,11 @@ def salvage_json_reply(text: str) -> dict:
     """Recover the complete items from a reply that was cut off mid-list (the model hit max_tokens).
 
     A truncated reply is not valid JSON, so parse_json_reply gives up on it and the whole result is lost.
-    This keeps every fully written book or recommendation before the cut. Returns {} if there is none.
+    This keeps every fully written book, recommendation or series before the cut. Returns {} if there is none.
     """
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
     decoder, found = json.JSONDecoder(), {}
-    for key in ("books", "recommendations"):
+    for key in ("books", "recommendations", "series"):
         opened = re.search(r'"%s"\s*:\s*\[' % key, text)
         if not opened:
             continue
@@ -229,6 +260,32 @@ def recommend_prompt(owned: list[OwnedBook], limit: int, author: str | None = No
     return f"Here is the user's personal library:\n{shelf}\n\n{ask}\n{rules}"
 
 
+# Bump when series_prompt or the series reply format changes, so cached answers are not reused.
+SERIES_PROMPT_VERSION = "1"
+
+JSON_SERIES_SUFFIX = """
+Reply with ONLY a JSON object, no prose and no code fences, in exactly this shape:
+{"series": [{"name": "...", "author": "...", "volumes": [{"number": 1, "title": "..."}]}]}"""
+
+
+def series_prompt(owned: list[OwnedBook]) -> str:
+    """Ask for the full published run of each series on the shelf. Which volumes are owned is worked out by the
+    server, not the model, and every missing volume is checked against the catalog before it is shown."""
+    shelf = "\n".join(f"- {b.title} by {b.author}" for b in owned)
+    return (
+        f"Here is the user's personal library:\n{shelf}\n\n"
+        "Which of these books belong to a numbered book series? For each such series, list every main volume "
+        "that has already been published, in reading order, with the number the series gives it. Use each "
+        "volume's usual English title (or its original title if it was never translated) and the author's full name.\n"
+        "Rules:\n"
+        "- Only series you are sure of, and only volumes that really exist and are already out. Leave out announced books.\n"
+        "- Main numbered volumes only: no novellas, short-story collections, companions or box sets unless the series "
+        "itself gives them a whole number.\n"
+        "- Include a series even if the user owns only one of its books.\n"
+        "- Skip standalone books."
+    )
+
+
 def synopsis_prompt(title: str, author: str, source: str) -> str:
     return (
         f"Below is the publisher's description of {title} by {author}.\n\n<description>\n{source[:4000]}\n</description>\n\n"
@@ -252,6 +309,7 @@ class LLM(Protocol):
     async def recommend(self, owned: list[OwnedBook], limit: int, author: str | None = None,
                         genre: str | None = None, similar_to: OwnedBook | None = None) -> list[tuple[Book, str]]: ...
     async def summarize(self, title: str, author: str, source: str) -> str: ...
+    async def series(self, owned: list[OwnedBook]) -> tuple[list[dict], bool]: ...
 
 
 class ClaudeLLM:
@@ -295,6 +353,12 @@ class ClaudeLLM:
             (Book(title=r["title"], author=r["author"], genres=r.get("genres", [])), r.get("reason", ""))
             for r in result.get("recommendations", [])
         ]
+
+    async def series(self, owned: list[OwnedBook]) -> tuple[list[dict], bool]:
+        """The series on the shelf, and whether the answer is complete."""
+        prompt = series_prompt(owned) + "\nCall report_series."
+        result = await self._tool_call(SERIES_TOOL, [{"type": "text", "text": prompt}], max_tokens=8192)
+        return list(result.get("series", []) or []), bool(result)
 
 
 async def _claude_summarize(client: AsyncAnthropic, title: str, author: str, source: str) -> str:
@@ -422,6 +486,14 @@ class OpenAICompatLLM:
             if isinstance(r, dict) and r.get("title") and r.get("author"):
                 out.append((Book(title=r["title"], author=r["author"], genres=r.get("genres") or []), r.get("reason", "")))
         return out
+
+    async def series(self, owned: list[OwnedBook]) -> tuple[list[dict], bool]:
+        """The series on the shelf, and whether the answer is complete (False when the reply was cut off)."""
+        max_tokens = max(MAX_TOKENS, 4096)  # a long run of series and volumes doesn't fit in a photo-sized reply
+        text, finish = await self._complete(series_prompt(owned) + JSON_SERIES_SUFFIX, max_tokens, model=self.text_model)
+        data = self._decode_json(text, finish, max_tokens)
+        series = [s for s in (data.get("series") or []) if isinstance(s, dict)]
+        return series, finish != "length" and bool(data)
 
     async def summarize(self, title: str, author: str, source: str) -> str:
         text, _ = await self._complete(synopsis_prompt(title, author, source), max_tokens=400, model=self.text_model)

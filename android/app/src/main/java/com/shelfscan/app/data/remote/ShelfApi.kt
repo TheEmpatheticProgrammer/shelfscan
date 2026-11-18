@@ -75,6 +75,17 @@ data class BookDto(
 @Serializable data class SearchRequest(val query: String, val limit: Int = 15)
 @Serializable data class SearchResponse(val books: List<BookDto> = emptyList())
 @Serializable data class IsbnResponse(val book: BookDto? = null)
+@Serializable data class SeriesRequest(val books: List<OwnedBookDto>, val refresh: Boolean = false)
+@Serializable data class SeriesVolumeDto(
+    val number: Int,
+    val title: String,
+    val owned: Boolean,
+    /** A missing volume: the catalog's record (cover, date). Null for the ones you own. */
+    val book: BookDto? = null,
+)
+/** A series you own part of: its owned and missing published volumes, in reading order. */
+@Serializable data class SeriesGapDto(val name: String, val author: String, val volumes: List<SeriesVolumeDto>)
+@Serializable data class SeriesResponse(val series: List<SeriesGapDto> = emptyList())
 
 interface ShelfApi {
     @Multipart
@@ -101,6 +112,9 @@ interface ShelfApi {
 
     @POST("lookup/isbn")
     suspend fun lookupIsbn(@Body body: IsbnRequest): IsbnResponse
+
+    @POST("series/gaps")
+    suspend fun seriesGaps(@Body body: SeriesRequest): SeriesResponse
 
     companion object {
         fun create(): ShelfApi {

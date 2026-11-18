@@ -11,11 +11,12 @@ import httpx
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from pydantic import ValidationError
 
-from .cache import TTL_S, Cache, NullCache, SingleFlight, create_cache, recommendations_key
+from .cache import TTL_S, Cache, NullCache, SingleFlight, create_cache, recommendations_key, series_key
 from .guard import suspicious_reason
 from .identity import merge_duplicates
+from .series import plan_gaps, verify_gaps
 from .catalog import Catalog, _authors_match, _titles_match, _volume_to_book, guess_language, volume_language
-from .llm import LLM, PROVIDER, RECOMMEND_PROMPT_VERSION, TEXT_MODEL, create_llm
+from .llm import LLM, PROVIDER, RECOMMEND_PROMPT_VERSION, SERIES_PROMPT_VERSION, TEXT_MODEL, create_llm
 from .models import (
     Book,
     BookRef,
@@ -34,6 +35,8 @@ from .models import (
     Recommendation,
     RecommendRequest,
     RecommendResponse,
+    SeriesRequest,
+    SeriesResponse,
     UpcomingRequest,
     UpcomingResponse,
 )
@@ -361,3 +364,44 @@ async def _synopsis(title: str, author: str, description: str) -> str:
 async def upcoming(req: UpcomingRequest):
     authors = list(dict.fromkeys(a.strip() for a in req.authors if a.strip() and a.lower() != "unknown"))[:40]
     return UpcomingResponse(books=await state.catalog.upcoming(authors))
+
+
+@app.post("/series/gaps", response_model=SeriesResponse, dependencies=[Depends(check_token)])
+async def series_gaps(req: SeriesRequest, response: Response):
+    """Series the user has started or nearly finished, with the published volumes they're missing."""
+    shelf = [b for b in req.books if b.title.strip()][:500]
+    if not shelf:
+        return SeriesResponse(series=[])
+    key = series_key(((b.title, b.author) for b in shelf), model=f"{PROVIDER}:{TEXT_MODEL}",
+                     prompt_version=SERIES_PROMPT_VERSION)
+    if not req.refresh and (hit := await _cached_series(key)):
+        response.headers["X-Cache"] = "HIT"
+        return hit
+
+    async with state.flight.lock(key):
+        if not req.refresh and (hit := await _cached_series(key)):
+            response.headers["X-Cache"] = "HIT"
+            return hit
+        failures_before = state.catalog.failures
+        try:
+            raw, complete = await state.llm.series(shelf)
+        except Exception as e:  # noqa: BLE001
+            log.error("Series call failed: %r", e)
+            raise HTTPException(502, "The AI model server failed; check the server log") from None
+        result = SeriesResponse(series=await verify_gaps(plan_gaps(raw, shelf), state.catalog))
+        # Never store a degraded answer: a cut-off reply, or missing volumes that went unchecked.
+        if complete and state.catalog.failures == failures_before:
+            await state.cache.set(key, result.model_dump_json(), TTL_S)
+    response.headers["X-Cache"] = "BYPASS" if req.refresh else "MISS"
+    return result
+
+
+async def _cached_series(key: str) -> SeriesResponse | None:
+    raw = await state.cache.get(key)
+    if not raw:
+        return None
+    try:
+        return SeriesResponse.model_validate_json(raw)
+    except ValidationError:
+        log.warning("Ignoring unreadable cache entry %s", key)
+        return None
