@@ -139,6 +139,13 @@ def lookup_key(title: str, author: str) -> str:
     return "shelfscan:lookup:" + hashlib.sha256(f"{CACHE_VERSION}|{_norm(title)}|{_norm(author)}".encode()).hexdigest()
 
 
+def series_key(books: Iterable[tuple[str, str]], *, model: str, prompt_version: str) -> str:
+    """Stable key for one series-gaps request: the shelf (in any order), the model and the prompt."""
+    shelf = sorted({(_norm(t), _norm(a)) for t, a in books})
+    payload = json.dumps({"v": CACHE_VERSION, "p": prompt_version, "m": model, "shelf": shelf}, separators=(",", ":"))
+    return "shelfscan:series:" + hashlib.sha256(payload.encode()).hexdigest()
+
+
 class SingleFlight:
     """One lock per key, so concurrent identical requests wait for the first instead of repeating its work."""
 

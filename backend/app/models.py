@@ -104,3 +104,25 @@ class SearchRequest(BaseModel):
 
 class SearchResponse(BaseModel):
     books: list[Book]
+
+
+class SeriesRequest(BaseModel):
+    books: list[OwnedBook] = Field(max_length=600)
+    refresh: bool = False  # skip the server cache and compute a fresh answer (the new answer is cached)
+
+
+class SeriesVolume(BaseModel):
+    number: int
+    title: str
+    owned: bool
+    book: Book | None = None  # a missing volume: the catalog's record (cover, ISBN, date); None when owned
+
+
+class SeriesGap(BaseModel):
+    name: str
+    author: str
+    volumes: list[SeriesVolume]  # the owned and the missing published volumes, in reading order
+
+
+class SeriesResponse(BaseModel):
+    series: list[SeriesGap]

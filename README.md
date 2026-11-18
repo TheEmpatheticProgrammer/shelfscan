@@ -159,6 +159,34 @@ Each book is then returned once: reads are merged when they share an ISBN, or ha
 subtitle or series prefix doesn't matter) and a compatible author ("C. Golden", "Golden, Christie" and
 "Unknown" all fit "Christie Golden"). Merging is idempotent, so running it again changes nothing.
 
+## Series gaps
+
+Discover > **Series** shows series you've started but haven't finished: "You own 1, 2 and 4. #3 is missing. #5 is out
+too." One tap puts the missing volumes on Want to read, each with a note like "#3 in The Stormlight Archive".
+
+`POST /series/gaps` uses the same rule as recommendations: the model suggests, the catalog decides.
+
+1. The model is sent the shelf and lists every published main volume of each series on it (`app/llm.py`,
+   `series_prompt`). Novellas and announced books are left out.
+2. The server works out which volumes you own by matching titles and authors against your shelf (`app/series.py`),
+   so a "(Stormlight Archive #1)" decoration on a scanned title doesn't matter. The model never says what you own.
+3. A series is shown when it has a hole before the last volume you own, or when you own at least two and later
+   volumes are out. Owning only book 1 isn't a gap.
+4. Every missing volume must exist in the catalog and already be out, or it's left out. That's at most 60 lookups
+   per request, holes first.
+
+Answers are cached like recommendations (a week, same shelf = same answer, `refresh: true` to recompute). A cut-off
+model reply, or a catalog outage that left volumes unchecked, is never cached. The app keeps the last answer for
+offline use, and a missing volume you add to the library stops showing without a new server call.
+
+## Shelfie card
+
+Library > **Share** (the share icon in the header) makes a 1080×1350 image of your shelf for posting: up to eight
+covers on shelves, "312 books · mostly sci-fi · 41% read", authors, books read and reading now, and the author you
+own most. It's drawn on the phone (`ui/library/Shelfie.kt`) from covers already in the image cache, so it needs no
+server and works offline. A missing cover becomes a cloth-colored block with the title. "Mostly <genre>" needs one
+genre to cover at least 30% of the shelf, otherwise it says "a bit of everything". The stats are in `data/ShelfStats.kt`.
+
 ## API
 
 | Endpoint | Body | Returns |
@@ -171,6 +199,7 @@ subtitle or series prefix doesn't matter) and a compatible author ("C. Golden", 
 | `POST /lookup/isbn` | `{isbn}` | `{book: Book \| null}` |
 | `POST /search` | `{query, limit?}` | `{books: Book[]}`, best match first |
 | `POST /upcoming` | `{authors: string[]}` | `{books: Book[]}` sorted by date |
+| `POST /series/gaps` | `{books: [{title, author, genres}], refresh?}` | `{series: [{name, author, volumes: [{number, title, owned, book?}]}]}` |
 
 Set `APP_TOKEN` on the server and `shelfscan.appToken` in the app to require an `X-App-Token` header. That keeps casual traffic off your API key; for a public release, replace it with real auth and rate limiting.
 
