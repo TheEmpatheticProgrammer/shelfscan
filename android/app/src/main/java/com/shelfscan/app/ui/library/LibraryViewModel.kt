@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -64,6 +65,9 @@ data class LibraryState(
 data class Notice(val text: String, val actionLabel: String? = null, val action: (() -> Unit)? = null)
 
 class LibraryViewModel(private val repo: BookRepository, initialQuery: String = "") : ViewModel() {
+    /** The whole shelf, whatever the search or filter, for the shelfie card. */
+    suspend fun allBooks(): List<Book> = repo.books.first()
+
     private val query = MutableStateFlow(initialQuery)
     private val options = MutableStateFlow(ViewOptions())
     private val selected = MutableStateFlow<Set<Long>>(emptySet())

@@ -11,6 +11,9 @@ import com.shelfscan.app.data.BookRepository
 import com.shelfscan.app.data.WishlistItem
 import com.shelfscan.app.data.remote.BookDto
 import com.shelfscan.app.data.remote.RecommendationDto
+import com.shelfscan.app.data.remote.SeriesGapDto
+import com.shelfscan.app.data.missingVolumes
+import com.shelfscan.app.data.wantToReadReason
 import com.shelfscan.app.util.friendlyMessage
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +21,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -52,6 +56,8 @@ data class DiscoverState(
     /** Set when the server couldn't be reached and a saved copy is shown: when that copy was received. */
     val forYouOfflineSince: Long? = null,
     val upcomingOfflineSince: Long? = null,
+    val series: Load<List<SeriesGapDto>> = Load.Idle,
+    val seriesOfflineSince: Long? = null,
 )
 
 class DiscoverViewModel(private val repo: BookRepository) : ViewModel() {
@@ -67,10 +73,20 @@ class DiscoverViewModel(private val repo: BookRepository) : ViewModel() {
 
     fun moveToLibrary(item: WishlistItem) = viewModelScope.launch { repo.moveToLibrary(item) }
 
+    /** Match keys of the books you own, so a series volume you've just added stops showing as missing. */
+    val ownedKeys: StateFlow<Set<String>> =
+        repo.books.map { books -> books.map { it.matchKey }.toSet() }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    /** Every missing volume of a series onto Want to read (the ones already there are left alone). */
+    fun saveMissing(series: SeriesGapDto) = viewModelScope.launch {
+        repo.addToWantToRead(series.missingVolumes.mapNotNull { v -> v.book?.let { it to series.wantToReadReason(v) } })
+    }
+
     // Results per focus, reused until the shelf changes, so flipping between chips is instant.
     private val recsCache = mutableMapOf<Focus, Pair<Set<String>, List<RecommendationDto>>>()
     private var recsJob: Job? = null
     private var upcomingKey: Set<String>? = null
+    private var seriesKey: Set<String>? = null
 
     init {
         viewModelScope.launch {
@@ -132,6 +148,18 @@ class DiscoverViewModel(private val repo: BookRepository) : ViewModel() {
                 _state.update { it.copy(upcoming = Load.Ready(fetched.data), upcomingOfflineSince = fetched.offlineSince) }
             }
             .onFailure { e -> _state.update { it.copy(upcoming = Load.Failed(e.friendlyMessage())) } }
+    }
+
+    fun loadSeries(force: Boolean = false) = viewModelScope.launch {
+        val key = shelfKey() ?: return@launch
+        if (!force && key == seriesKey && _state.value.series is Load.Ready) return@launch
+        _state.update { it.copy(series = Load.Loading) }
+        runCatching { repo.seriesGaps(refresh = force) }
+            .onSuccess { fetched ->
+                if (!fetched.isOffline) seriesKey = key
+                _state.update { it.copy(series = Load.Ready(fetched.data), seriesOfflineSince = fetched.offlineSince) }
+            }
+            .onFailure { e -> _state.update { it.copy(series = Load.Failed(e.friendlyMessage())) } }
     }
 
     private suspend fun shelfKey(): Set<String>? {

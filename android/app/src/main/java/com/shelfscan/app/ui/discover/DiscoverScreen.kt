@@ -1,7 +1,12 @@
 package com.shelfscan.app.ui.discover
 
 import android.text.format.DateUtils
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,20 +28,23 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.CollectionsBookmark
 import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.outlined.BookmarkAdded
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.PrimaryTabRow
+import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
@@ -51,11 +59,20 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.shelfscan.app.data.WishlistItem
+import com.shelfscan.app.data.againstLibrary
+import com.shelfscan.app.data.isGap
+import com.shelfscan.app.data.missingVolumes
+import com.shelfscan.app.data.remote.SeriesGapDto
+import com.shelfscan.app.data.summary
+import com.shelfscan.app.data.volumeNote
+import com.shelfscan.app.data.wantToReadReason
 import com.shelfscan.app.data.matchKey
 import com.shelfscan.app.data.remote.BookDto
 import com.shelfscan.app.data.toDto
@@ -82,6 +99,7 @@ fun DiscoverScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     val wantToRead by vm.wantToRead.collectAsStateWithLifecycle()
     val savedKeys by vm.savedKeys.collectAsStateWithLifecycle()
+    val ownedKeys by vm.ownedKeys.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var openedFrom by rememberSaveable { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<Pick?>(null) }
@@ -98,6 +116,7 @@ fun DiscoverScreen(
         when (tab) {
             TAB_FOR_YOU -> vm.loadForYou()
             TAB_COMING -> vm.loadUpcoming()
+            TAB_SERIES -> vm.loadSeries()
         }
     }
 
@@ -105,14 +124,22 @@ fun DiscoverScreen(
         Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Discover", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.weight(1f))
             if (!state.libraryEmpty && tab != TAB_SAVED) {
-                IconButton(onClick = { if (tab == TAB_FOR_YOU) vm.loadForYou(force = true) else vm.loadUpcoming(force = true) }) {
+                IconButton(onClick = {
+                    when (tab) {
+                        TAB_FOR_YOU -> vm.loadForYou(force = true)
+                        TAB_SERIES -> vm.loadSeries(force = true)
+                        else -> vm.loadUpcoming(force = true)
+                    }
+                }) {
                     Icon(Icons.Filled.Refresh, "Refresh")
                 }
             }
         }
-        PrimaryTabRow(selectedTabIndex = tab) {
+        // Scrollable: four tabs don't fit a narrow phone at a readable size.
+        PrimaryScrollableTabRow(selectedTabIndex = tab, edgePadding = 8.dp) {
             Tab(tab == TAB_FOR_YOU, { tab = TAB_FOR_YOU }, text = { Text("For you") }, icon = { Icon(Icons.Filled.AutoAwesome, null) })
             Tab(tab == TAB_COMING, { tab = TAB_COMING }, text = { Text("Coming soon") }, icon = { Icon(Icons.Filled.EventAvailable, null) })
+            Tab(tab == TAB_SERIES, { tab = TAB_SERIES }, text = { Text("Series") }, icon = { Icon(Icons.Filled.CollectionsBookmark, null) })
             Tab(tab == TAB_SAVED, { tab = TAB_SAVED }, text = { Text("Want to read") }, icon = { Icon(Icons.Filled.Bookmark, null) })
         }
 
@@ -153,6 +180,17 @@ fun DiscoverScreen(
                     },
                 )
                 else PickList(sections, onClick = { selected = it })
+            }
+        } else if (tab == TAB_SERIES) {
+            OfflineNote(state.seriesOfflineSince, onRetry = { vm.loadSeries(force = true) })
+            LoadContent(state.series, onRetry = { vm.loadSeries(force = true) }) { found ->
+                val series = found.mapNotNull { it.againstLibrary(ownedKeys) }
+                if (series.isEmpty()) EmptyState(
+                    icon = Icons.Filled.CollectionsBookmark,
+                    title = "No gaps in your series",
+                    body = "When you own some books of a series but not the rest, the missing ones show up here.",
+                )
+                else SeriesList(series, savedKeys, onOpen = { selected = it }, onSaveMissing = vm::saveMissing)
             }
         } else {
             OfflineNote(state.upcomingOfflineSince, onRetry = { vm.loadUpcoming(force = true) })
@@ -201,7 +239,84 @@ private fun OfflineNote(since: Long?, onRetry: () -> Unit) {
 
 private const val TAB_FOR_YOU = 0
 private const val TAB_COMING = 1
-private const val TAB_SAVED = 2
+private const val TAB_SERIES = 2
+private const val TAB_SAVED = 3
+
+/** Each series: which volumes you own, what's missing, then a row per missing volume. */
+@Composable
+private fun SeriesList(
+    series: List<SeriesGapDto>,
+    savedKeys: Set<String>,
+    onOpen: (Pick) -> Unit,
+    onSaveMissing: (SeriesGapDto) -> Unit,
+) {
+    LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
+        series.forEachIndexed { s, gap ->
+            item(key = "series|${gap.name}") {
+                SeriesHeader(gap, savedKeys, first = s == 0, onSaveMissing = { onSaveMissing(gap) })
+            }
+            val missing = gap.missingVolumes
+            itemsIndexed(missing, key = { _, v -> "series|${gap.name}|${v.number}" }) { i, v ->
+                val book = v.book ?: return@itemsIndexed
+                // The row says where it sits in the series; the sheet keeps that as the Want to read reason.
+                PickRow(Pick(book, gap.volumeNote(v)), onClick = { onOpen(Pick(book, gap.wantToReadReason(v))) })
+                if (i < missing.lastIndex) HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable
+private fun SeriesHeader(gap: SeriesGapDto, savedKeys: Set<String>, first: Boolean, onSaveMissing: () -> Unit) {
+    val unsaved = gap.missingVolumes.count { v -> v.book?.matchKey !in savedKeys }
+    Column(Modifier.fillMaxWidth().padding(top = if (first) 12.dp else 28.dp, bottom = 4.dp)) {
+        Text(gap.name, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(gap.author, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.secondary, maxLines = 1)
+        Spacer(Modifier.height(10.dp))
+        VolumeStrip(gap)
+        Spacer(Modifier.height(8.dp))
+        Text(gap.summary(), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(8.dp))
+        if (unsaved > 0) {
+            FilledTonalButton(onClick = onSaveMissing) {
+                Icon(Icons.Outlined.BookmarkBorder, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(if (unsaved == 1) "Add to Want to read" else "Add $unsaved to Want to read")
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
+                Icon(Icons.Outlined.BookmarkAdded, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(8.dp))
+                Text("On your Want to read list", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+}
+
+/** One square per volume: filled for the ones you own, outlined for the ones you're missing (brass for a hole). */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun VolumeStrip(gap: SeriesGapDto) {
+    val shape = RoundedCornerShape(6.dp)
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        gap.volumes.forEach { v ->
+            val missingColor = if (gap.isGap(v)) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outline
+            Box(
+                Modifier.size(32.dp).clip(shape).then(
+                    if (v.owned) Modifier.background(MaterialTheme.colorScheme.primary) else Modifier.border(1.5.dp, missingColor, shape),
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    v.number.toString(),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (v.owned) MaterialTheme.colorScheme.onPrimary else missingColor,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+    }
+}
 
 private fun sectionsFor(focus: Focus, recs: List<RecommendationDto>): List<Section> {
     val (byAuthor, similar) = recs.partition { it.section == RecommendationDto.SECTION_BY_AUTHOR }
