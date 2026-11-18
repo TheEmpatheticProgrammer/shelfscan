@@ -1,5 +1,7 @@
-# Usage: python docs/store/render_store_art.py docs/store   (needs: pip install pillow; uses DejaVu fonts)
+# Usage: python docs/store/render_store_art.py docs/store   (needs: pip install pillow; uses DejaVu fonts,
+# see STORE_ART_FONTS below)
 """Render Play Store art from the app's adaptive-icon vector (res/drawable/ic_launcher_foreground.xml)."""
+import os
 import sys
 from PIL import Image, ImageDraw, ImageFont
 
@@ -49,12 +51,15 @@ def fit(path, text, size):
         size -= 1
 
 
-SERIF = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
-SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+# DejaVu, as installed on Linux. Elsewhere, point STORE_ART_FONTS at a folder holding the same two files
+# (matplotlib's wheel ships them under matplotlib/mpl-data/fonts/ttf).
+FONTS = os.environ.get("STORE_ART_FONTS", "/usr/share/fonts/truetype/dejavu")
+SERIF = os.path.join(FONTS, "DejaVuSerif-Bold.ttf")
+SANS = os.path.join(FONTS, "DejaVuSans.ttf")
 lines = ["Photograph your shelves.", "Get a catalog and what to read next."]
-title = fit(SERIF, "ShelfScan", 88)
+title = fit(SERIF, "Shelfsight", 88)
 body = min((fit(SANS, t, 30) for t in lines), key=lambda f: f.size)
-d.text((x, 150 * SS), "ShelfScan", font=title, fill=PAPER)
+d.text((x, 150 * SS), "Shelfsight", font=title, fill=PAPER)
 d.text((x, 272 * SS), lines[0], font=body, fill=BRASS)
 d.text((x, 272 * SS + body.size * 1.35), lines[1], font=body, fill=PAPER)
 fg.resize((1024, 500), Image.LANCZOS).save(f"{out}/feature-graphic-1024x500.png")

@@ -1,12 +1,12 @@
 ---
-title: ShelfScan privacy policy
+title: Shelfsight privacy policy
 ---
 
-# ShelfScan privacy policy
+# Shelfsight privacy policy
 
 _Last updated: 17 November 2026_
 
-ShelfScan ("the app") helps you catalog the physical books you own. This policy explains what the app keeps on
+Shelfsight ("the app") helps you catalog the physical books you own. This policy explains what the app keeps on
 your phone, what it sends off it, and where that goes.
 
 ## What stays on your phone
@@ -15,9 +15,9 @@ stored **only on your phone**. They are included in your phone's Android backup 
 any export file you choose to create.
 
 ## What is sent, and why
-The app works by sending some information to the ShelfScan server, which is run by the app's developer:
+The app works by sending some information to the Shelfsight server, which is run by the app's developer:
 
-- **Photos you take or choose for scanning.** Sent to the ShelfScan server, which passes them to an AI model to read
+- **Photos you take or choose for scanning.** Sent to the Shelfsight server, which passes them to an AI model to read
   the book titles. The AI model runs on the developer's own computer; photos are **not** sent to any third-party AI
   service. Neither the server nor the model stores your photos: each photo is processed and then discarded. If the
   server can't be reached, photos wait on your phone until they can be sent, and are deleted from your phone after
@@ -34,7 +34,7 @@ phone loads cover images directly from those services' image addresses, as any w
 
 All traffic between the app and the server is encrypted (HTTPS).
 
-## What ShelfScan does not do
+## What Shelfsight does not do
 No accounts, no ads, no analytics or tracking SDKs, and no selling or sharing of your data. The app asks for no
 camera permission: photos come from your camera app or photo picker, and barcodes are read on your phone by Google
 Play services' code scanner.
@@ -49,7 +49,7 @@ working. Logs are deleted after **30 days**.
   it is linked to an account or to your identity. If you'd still like anything removed, email the address below.
 
 ## Children
-ShelfScan isn't directed at children under 13.
+Shelfsight isn't directed at children under 13.
 
 ## Changes
 If this policy changes, the new version will be posted at this address with a new "Last updated" date.
