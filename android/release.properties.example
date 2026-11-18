@@ -8,6 +8,6 @@ keyAlias=shelfsight-upload
 keyPassword=
 
 # The Shelfsight server the released app talks to. Must be HTTPS and end with a slash.
-serverUrl=https://shelfscan.example.com/
+serverUrl=https://shelfsight.example.com/
 # Must match APP_TOKEN on that server (leave empty only if the server has none).
 appToken=
