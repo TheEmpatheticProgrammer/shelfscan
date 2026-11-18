@@ -125,9 +125,8 @@ Play asks for these before the first rollout, internal testing included:
 | Feature graphic 1024×500 | `docs/store/feature-graphic-1024x500.png` (`docs/store/render_store_art.py` regenerates both) |
 | Short and full description | `docs/store/listing.md` |
 | Phone screenshots (2–8) | Take them on the release build: Library, Book page, Discover, Add books |
-| Privacy policy URL | Review `docs/privacy-policy.md`, fill in the blanks, publish it (e.g. GitHub Pages) |
-| Data safety form | Answers drafted at the bottom of `docs/privacy-policy.md` |
-| Content rating, target audience, ads | Questionnaire: no ads; not designed for children |
+| Privacy policy URL | https://theempatheticprogrammer.github.io/shelfscan/privacy-policy.html (GitHub Pages serves `docs/` from `main`) |
+| Data safety form, app access, ads, rating | `docs/store/data-safety.md` |
 
 ## What the release build does differently
 
