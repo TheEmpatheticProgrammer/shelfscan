@@ -30,6 +30,9 @@ Check it: `curl localhost:8000/health`. Or `docker build -t shelfscan . && docke
 
 Tests (LLM and Google Books mocked): `pip install pytest respx && pytest -q`
 
+On Windows, once `backend\.env` exists (copy `.env.example`), `backend\start-server.ps1` loads it and starts the
+server on port 8001 in one step.
+
 ## 2. Run the app
 
 1. Open `android/` in Android Studio (Ladybug or newer) and let Gradle sync.

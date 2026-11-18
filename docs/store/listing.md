@@ -32,5 +32,5 @@ Your library lives on your phone. Export it to a file at any time and import it 
 ---
 
 **Category:** Books & Reference
-**Contact email:** [contact email]
-**Privacy policy:** [URL of the published privacy policy]
+**Contact email:** mongitox@gmail.com
+**Privacy policy:** https://theempatheticprogrammer.github.io/shelfscan/privacy-policy.html
