@@ -154,7 +154,14 @@ class BookRepository(
     suspend fun coverCandidates(book: Book): List<String> =
         api.coverCandidates(BookRefDto(book.title, book.author, book.isbn)).candidates
 
-    suspend fun setCover(book: Book, url: String) = dao.setCover(book.id, url, System.currentTimeMillis())
+    /** A cover the user picked on the book page. Remembered, so automatic cover updates leave it alone. */
+    suspend fun setCover(book: Book, url: String) {
+        dao.setCover(book.id, url, System.currentTimeMillis())
+        val picked = pickedCovers() + book.id.toString()
+        prefs.edit().putStringSet(PICKED_COVERS, picked).apply()
+    }
+
+    private fun pickedCovers(): Set<String> = prefs.getStringSet(PICKED_COVERS, emptySet()).orEmpty().toSet()
 
     /**
      * Looks again for covers of books that still have none, at most every few days per book, so a
@@ -229,7 +236,7 @@ class BookRepository(
         val d = api.bookDetails(DetailsRequest(current.title, current.author, current.isbn, current.description))
         dao.update(
             current.copy(
-                coverUrl = d.coverUrl ?: current.coverUrl,
+                coverUrl = if (current.id.toString() in pickedCovers()) current.coverUrl else d.coverUrl ?: current.coverUrl,
                 isbn = current.isbn ?: d.isbn,
                 description = current.description ?: d.description,
                 // An empty synopsis marks "looked, nothing to summarize" so it isn't asked for again.
@@ -316,19 +323,21 @@ class BookRepository(
     private fun lockFor(key: String): Mutex = locks.getOrPut(key) { Mutex() }
 
     /**
-     * One-time pass that swaps the small covers of books scanned before Open Library covers existed
-     * for large ones. If the server can't be reached it simply runs again on the next launch.
+     * One-time pass that asks the server again for every book's cover. v2 swapped small covers for large
+     * ones; v3 replaces covers of the wrong edition (another language, or a guide or adaptation of the book).
+     * Covers the user picked are kept. If the server can't be reached it simply runs again on the next launch.
      */
     suspend fun upgradeCoversOnce() = coverUpgrade.withLock {
-        if (prefs.getBoolean(COVERS_V2, false)) return@withLock
-        dao.all().chunked(25).forEach { batch ->
+        if (prefs.getBoolean(COVERS_V3, false)) return@withLock
+        val picked = pickedCovers()
+        dao.all().filterNot { it.id.toString() in picked }.chunked(25).forEach { batch ->
             val found = api.covers(CoversRequest(batch.map { BookRefDto(it.title, it.author, it.isbn) })).covers
             batch.zip(found).forEach { (book, cover) ->
                 val url = cover.coverUrl
                 if (url != null && url != book.coverUrl) dao.update(book.copy(coverUrl = url, isbn = book.isbn ?: cover.isbn))
             }
         }
-        prefs.edit().putBoolean(COVERS_V2, true).apply()
+        prefs.edit().putBoolean(COVERS_V3, true).apply()
     }
 
     suspend fun delete(book: Book) = dao.delete(book)
@@ -356,7 +365,8 @@ class BookRepository(
     private suspend fun wantToReadForServer() = wishlistDao.all().take(50).map { OwnedBookDto(it.title, it.author, it.genres) }
 
     private companion object {
-        const val COVERS_V2 = "covers_v2_done"
+        const val COVERS_V3 = "covers_v3_done"
+        const val PICKED_COVERS = "picked_cover_ids"
         const val COVER_RETRY_MS = 3L * 24 * 60 * 60 * 1000 // look again after three days
         const val SIMILAR_TTL_MS = 7L * 24 * 60 * 60 * 1000 // similar books are reused for a week
         const val SIMILAR_PREFETCH_WINDOW_MS = 14L * 24 * 60 * 60 * 1000 // prefetch them for books added in 2 weeks
