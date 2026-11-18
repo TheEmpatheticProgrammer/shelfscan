@@ -143,6 +143,24 @@ title | author | genre
 - genre: one broad genre, such as Thriller or Science Fiction
 If you see no books, reply with the single word NONE."""
 
+CUT_OFF_NOTE = "The model's reply was cut off, so some books may be missing."
+FAILED_PHOTO_NOTE = "couldn't be processed; try it again."
+
+
+def identify_was_degraded(notes: str | None) -> bool:
+    """True when the notes say the read is incomplete (a cut-off reply or a failed photo). Such an answer
+    is shown to the user but never cached, so rescanning the photo gets a fresh attempt."""
+    return bool(notes) and (CUT_OFF_NOTE in notes or FAILED_PHOTO_NOTE in notes)
+
+
+def _fingerprint(*parts: str) -> str:
+    import hashlib
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:12]
+
+
+# Changes whenever a photo prompt is edited, so cached photo reads never outlive the prompt that made them.
+IDENTIFY_PROMPT_FINGERPRINT = _fingerprint(IDENTIFY_PROMPT, SINGLE_PHOTO_PROMPT, LINE_IDENTIFY_SUFFIX, JSON_IDENTIFY_SUFFIX)
+
 # Bump when recommend_prompt or the recommendation reply format changes, so cached answers are not reused.
 RECOMMEND_PROMPT_VERSION = "2"  # 2: "similar to this book" focus; picks carry Open Library covers
 
@@ -423,7 +441,7 @@ class OpenAICompatLLM:
             if data:
                 kept = sum(len(v) for v in data.values())
                 log.warning("Model reply was cut off (finish=%s, max_tokens=%s); kept %d complete item(s)", finish, max_tokens, kept)
-                data.setdefault("notes", "The model's reply was cut off, so some books may be missing.")
+                data.setdefault("notes", CUT_OFF_NOTE)
             else:
                 log.warning("Couldn't parse JSON from model reply (finish=%s): %s", finish, text[:500])
         return data
@@ -444,7 +462,7 @@ class OpenAICompatLLM:
         books = [b for found, _ in results for b in found]  # duplicates across photos are merged later
         notes = list(dict.fromkeys(n for _, n in results if n))
         if failed:
-            notes.append(f"Photo {', '.join(map(str, failed))} couldn't be processed; try it again.")
+            notes.append(f"Photo {', '.join(map(str, failed))} {FAILED_PHOTO_NOTE}")
         return books, " ".join(notes) or None
 
     async def _identify_one(self, data: bytes, mime: str) -> tuple[list[Book], str | None]:
@@ -464,7 +482,7 @@ class OpenAICompatLLM:
             if truncated:
                 log.warning("Model reply was cut off (finish=%s, max_tokens=%s); kept %d book(s)", finish, MAX_TOKENS, len(lines))
             result = {"books": lines,
-                      "notes": "The model's reply was cut off, so some books may be missing." if truncated else None}
+                      "notes": CUT_OFF_NOTE if truncated else None}
         books = []
         for b in result.get("books", []) or []:
             if not isinstance(b, dict) or not str(b.get("title", "")).strip():

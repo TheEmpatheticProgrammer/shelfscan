@@ -190,16 +190,22 @@ def test_answer_is_cached_and_refresh_recomputes(api):
     assert llm.calls == 2
 
 
+def series_cached(api) -> bool:
+    """A stored series answer (catalog lookups are cached too, under their own keys)."""
+    return any(k.startswith("shelfscan:series:") for k in api.cache.store)
+
+
 def test_degraded_answers_are_not_cached(api, catalog):
     books = shelf("The Way of Kings", "Rhythm of War")
     api.use(FakeLLM([STORMLIGHT], complete=False))   # the reply was cut off
     api.post("/series/gaps", json={"books": books})
-    assert api.cache.store == {}
+    assert not series_cached(api)
+    api.cache.store.clear()   # drop the catalog lookups remembered above, so the outage below is really hit
     catalog.down = True   # missing volumes went unchecked
     api.use(FakeLLM([STORMLIGHT]))
     r = api.post("/series/gaps", json={"books": books})
     assert missing(r.json()["series"][0])[0] == (2, "Words of Radiance")   # kept as is, like recommendations
-    assert api.cache.store == {}
+    assert not series_cached(api)
 
 
 def test_model_failure_is_a_502(api):

@@ -2,20 +2,31 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import random
 import re
+import time
 from datetime import date
 
 import httpx
 
+from .cache import LOOKUP_MISS_TTL_S, LOOKUP_TTL_S, Cache, NullCache, lookup_key
 from .identity import SNAP_MIN, snap
 from .models import Book
-from .openlibrary import OpenLibrary
+from .openlibrary import SEARCH_URL, OpenLibrary, enabled as open_library_enabled
 
 GOOGLE_BOOKS = "https://www.googleapis.com/books/v1/volumes"
 API_KEY = os.getenv("GOOGLE_BOOKS_API_KEY")  # optional; raises quota limits
 log = logging.getLogger("shelfscan.catalog")
+
+# Google Books answers 429 when asked too much too fast (and, without an API key, quickly runs out of quota).
+GOOGLE_RETRIES = int(os.getenv("GOOGLE_BOOKS_RETRIES", "2"))  # extra attempts after a 429, 5xx or timeout
+GOOGLE_COOLDOWN_S = float(os.getenv("GOOGLE_BOOKS_COOLDOWN_S", "60"))  # how long to stop asking after repeated refusals
+GOOGLE_TRIP_AFTER = 3  # consecutive failed lookups that start the cooldown
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+_sleep = asyncio.sleep  # replaced in tests
 
 
 def _norm(s: str) -> str:
@@ -185,11 +196,55 @@ def _volume_to_book(item: dict, fallback: Book | None = None) -> Book:
     )
 
 
+def _nearest(pool: list[dict], book: Book) -> dict | None:
+    """The catalog record whose title is nearly the book's as read ("Shadow of Wars" for "Shadow Wars"), by an
+    author who agrees and with the same volume number. The record carries `_snap_title`, the title to use."""
+    best, best_item = 0.0, None
+    for item in pool:
+        info = item.get("volumeInfo", {})
+        if not _authors_match(book.author, info.get("authors", [])):
+            continue
+        if _DERIVATIVE.search(info.get("title", "")) and not _DERIVATIVE.search(book.title):
+            continue  # a guide or adaptation of the book, not the book
+        score, part = snap(book.title, info.get("title", ""))
+        if score > best:
+            best, best_item = score, {**item, "_snap_title": part}
+    if best_item is not None and best >= SNAP_MIN:
+        log.info("snapped %r -> %r (similarity %.2f)", book.title, best_item["_snap_title"], best)
+        return best_item
+    return None
+
+
+def _open_library_item(doc: dict) -> dict:
+    """An Open Library search result in the shape of a Google Books volume."""
+    info = {"title": doc["title"], "authors": doc.get("author_name") or []}
+    if doc.get("first_publish_year"):
+        info["publishedDate"] = str(doc["first_publish_year"])
+    isbns = [i for i in doc.get("isbn") or [] if len(i) == 13] or list(doc.get("isbn") or [])[:1]
+    if isbns:
+        info["industryIdentifiers"] = [{"type": "ISBN_13" if len(isbns[0]) == 13 else "ISBN_10", "identifier": isbns[0]}]
+    return {"volumeInfo": info}
+
+
+def _backoff(response: "httpx.Response | None", attempt: int) -> float:
+    """Seconds to wait before retrying: the server's Retry-After (capped), else a short jittered exponential."""
+    if response is not None:
+        try:
+            return min(float(response.headers.get("retry-after", "")), 3.0)
+        except ValueError:
+            pass
+    return 0.4 * (2 ** attempt) + random.uniform(0, 0.2)
+
+
 class Catalog:
     def __init__(self, client: httpx.AsyncClient):
         self.client = client
         self.failures = 0  # lookups that couldn't reach Google Books; lets callers avoid caching degraded answers
         self.ol = OpenLibrary(client)
+        self.cache: Cache = NullCache()  # set by the app: remembers lookup results (Redis, when configured)
+        self._google_slots = asyncio.Semaphore(3)  # never more than a few Google requests at once
+        self._google_strikes = 0
+        self._google_down_until = 0.0
 
     async def with_best_cover(self, book: Book, lang: str | None = None) -> Book:
         """Swap in Open Library's large cover when it has one for an edition with this title and author, in
@@ -203,20 +258,94 @@ class Catalog:
         return list(await asyncio.gather(*(self.with_best_cover(b) for b in books)))
 
     async def _search(self, q: str, **params) -> list[dict] | None:
-        """Matching volumes, [] when there are none, or None when the catalog couldn't be reached."""
+        """Matching volumes, [] when there are none, or None when the catalog couldn't be reached.
+
+        A 429, a server error or a timeout is retried with a short backoff (honouring Retry-After). After
+        several failed lookups in a row Google Books is left alone for a cooldown, so one scan of 50 books
+        doesn't fire hundreds of doomed requests; callers then fall back to Open Library."""
         p = {"q": q, "maxResults": params.pop("maxResults", 5), "printType": "books", **params}
         if API_KEY:
             p["key"] = API_KEY
-        try:
-            r = await self.client.get(GOOGLE_BOOKS, params=p, timeout=10)
-            r.raise_for_status()
-            return r.json().get("items", [])
-        except (httpx.HTTPError, ValueError) as e:
+        if time.monotonic() < self._google_down_until:
             self.failures += 1
-            log.warning("Google Books lookup failed for %r: %s", q, e)
             return None
+        error: Exception | str = "unknown"
+        for attempt in range(GOOGLE_RETRIES + 1):
+            try:
+                async with self._google_slots:
+                    r = await self.client.get(GOOGLE_BOOKS, params=p, timeout=10)
+                if r.status_code in _RETRY_STATUS and attempt < GOOGLE_RETRIES:
+                    await _sleep(_backoff(r, attempt))
+                    continue
+                r.raise_for_status()
+                self._google_strikes = 0
+                return r.json().get("items", [])
+            except httpx.TransportError as e:  # timeouts and connection problems
+                error = e
+                if attempt < GOOGLE_RETRIES:
+                    await _sleep(_backoff(None, attempt))
+                    continue
+            except httpx.HTTPStatusError as e:
+                error = e
+                if e.response.status_code not in _RETRY_STATUS | {403}:  # a bad query, not a refusal: don't count it
+                    self.failures += 1
+                    log.warning("Google Books lookup failed for %r: %s", q, e)
+                    return None
+            except ValueError as e:
+                error = e
+            break
+        self.failures += 1
+        self._google_strikes += 1
+        if self._google_strikes >= GOOGLE_TRIP_AFTER and time.monotonic() >= self._google_down_until:
+            self._google_down_until = time.monotonic() + GOOGLE_COOLDOWN_S
+            log.warning("Google Books keeps refusing (%s); using Open Library for %.0f s. "
+                        "Set GOOGLE_BOOKS_API_KEY to raise the quota.", error, GOOGLE_COOLDOWN_S)
+        else:
+            log.warning("Google Books lookup failed for %r: %s", q, error)
+        return None
 
     async def lookup(self, book: Book) -> tuple[dict | None, bool]:
+        """Find the catalog record for a title + author. Returns (volume or None, catalog_reachable).
+        Answers seen before come from the cache; otherwise Google Books is asked, and Open Library when
+        Google can't be reached (rate limited, down), so a throttled Google no longer leaves books unchecked."""
+        key = lookup_key(book.title, book.author)
+        if (raw := await self.cache.get(key)):
+            try:
+                return json.loads(raw)["item"], True
+            except (ValueError, KeyError, TypeError):
+                pass  # unreadable entry: look it up again and overwrite it
+        item, reachable = await self._lookup_google(book)
+        if item is None and not reachable:
+            item, reachable = await self._lookup_open_library(book)
+        if reachable:  # only definite answers are remembered, never "couldn't reach anyone"
+            await self.cache.set(key, json.dumps({"item": item}), LOOKUP_TTL_S if item else LOOKUP_MISS_TTL_S)
+        return item, reachable
+
+    async def _lookup_open_library(self, book: Book) -> tuple[dict | None, bool]:
+        """The same title+author check against Open Library, with its records shaped like Google's so the
+        matching and near-miss correction are shared."""
+        if not open_library_enabled():
+            return None, False
+        unknown = is_unknown(book.author)
+        reachable = False
+        pool: list[dict] = []
+        for title in title_variants(book.title):
+            params = {"title": title, "fields": "key,title,author_name,first_publish_year,isbn", "limit": 5}
+            if not unknown:
+                params["author"] = book.author
+            data = await self.ol._get(SEARCH_URL, params)
+            if data is None:
+                continue
+            reachable = True
+            items = [_open_library_item(d) for d in data.get("docs", []) if d.get("title")]
+            pool += items
+            for item in items:
+                info = item["volumeInfo"]
+                if _match(title, book.author, info["title"], info["authors"]):
+                    return item, True
+        return (None if unknown else _nearest(pool, book)), reachable
+
+    async def _lookup_google(self, book: Book) -> tuple[dict | None, bool]:
         """Find the catalog record for a title + author. Returns (volume or None, catalog_reachable).
         Tries cleaner forms of the title when the one read off the spine finds nothing, and searches by
         title alone when the author couldn't be read."""
@@ -251,18 +380,8 @@ class Catalog:
                 if items is not None:
                     reachable = True
                     pool += items
-            best, best_item = 0.0, None
-            for item in pool:
-                info = item.get("volumeInfo", {})
-                if not _authors_match(book.author, info.get("authors", [])):
-                    continue
-                if _DERIVATIVE.search(info.get("title", "")) and not _DERIVATIVE.search(book.title):
-                    continue  # a guide or adaptation of the book, not the book
-                score, part = snap(book.title, info.get("title", ""))
-                if score > best:
-                    best, best_item = score, {**item, "_snap_title": part}
-            if best_item is not None and best >= SNAP_MIN:
-                log.info("snapped %r -> %r (similarity %.2f)", book.title, best_item["_snap_title"], best)
+            best_item = _nearest(pool, book)
+            if best_item is not None:
                 return best_item, True
         return None, reachable
 

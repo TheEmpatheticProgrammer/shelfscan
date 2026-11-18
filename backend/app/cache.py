@@ -1,4 +1,4 @@
-"""Response cache for recommendations. Redis when REDIS_URL is set, otherwise off.
+"""Response cache for recommendations and photo reads. Redis when REDIS_URL is set, otherwise off.
 
 Recommendations are slow (a model call plus a catalog lookup per pick) and change rarely, so the finished,
 verified response is stored for a few days. Three rules keep it safe:
@@ -27,6 +27,11 @@ REDIS_URL = os.getenv("REDIS_URL", "")  # e.g. redis://localhost:6379/0 ; empty 
 TTL_S = int(os.getenv("RECS_CACHE_TTL_S", str(7 * 24 * 3600)))  # "doesn't change often": a week
 # Bump to throw away every cached answer, e.g. after switching the model behind a gateway alias.
 CACHE_VERSION = os.getenv("RECS_CACHE_VERSION", "1")
+# A photo's result depends only on its bytes, the model and the code, so it can be kept longer.
+IDENTIFY_TTL_S = int(os.getenv("IDENTIFY_CACHE_TTL_S", str(30 * 24 * 3600)))
+# Catalog lookups (is this title by this author a real book?) barely change, and each costs a rate-limited request.
+LOOKUP_TTL_S = int(os.getenv("LOOKUP_CACHE_TTL_S", str(30 * 24 * 3600)))
+LOOKUP_MISS_TTL_S = int(os.getenv("LOOKUP_MISS_TTL_S", str(6 * 3600)))  # "not found" is kept briefly: it may be a misread or a flaky answer
 SOCKET_TIMEOUT_S = float(os.getenv("REDIS_TIMEOUT_S", "0.25"))
 COOLDOWN_S = float(os.getenv("REDIS_COOLDOWN_S", "30"))
 
@@ -91,14 +96,14 @@ class RedisCache:
 
 def create_cache() -> Cache:
     if not REDIS_URL:
-        log.info("REDIS_URL not set: recommendations are not cached")
+        log.info("REDIS_URL not set: recommendations and photo reads are not cached")
         return NullCache()
     import redis.asyncio as redis
 
     client = redis.from_url(
         REDIS_URL, socket_connect_timeout=SOCKET_TIMEOUT_S, socket_timeout=SOCKET_TIMEOUT_S
     )
-    log.info("Caching recommendations in Redis (ttl %.1f days)", TTL_S / 86400)
+    log.info("Caching recommendations (%.0f days) and photo reads (%.0f days) in Redis", TTL_S / 86400, IDENTIFY_TTL_S / 86400)
     return RedisCache(client)
 
 
@@ -118,6 +123,20 @@ def recommendations_key(
         fields["similar_to"] = [_norm(similar_to[0]), _norm(similar_to[1])]
     payload = json.dumps(fields, separators=(",", ":"))
     return "shelfscan:recs:" + hashlib.sha256(payload.encode()).hexdigest()
+
+
+def identify_key(images: Iterable[bytes], *, model: str, prompt_version: str, policy: str) -> str:
+    """Stable key for one /identify request: the exact photo bytes (hashed, so nothing is stored in the key),
+    the model, the prompt and guardrail version, and what happens to unverified books. Photo order doesn't matter."""
+    photos = sorted(hashlib.sha256(b).hexdigest() for b in images)
+    payload = json.dumps({"v": CACHE_VERSION, "p": prompt_version, "m": model, "policy": policy, "photos": photos},
+                         separators=(",", ":"))
+    return "shelfscan:identify:" + hashlib.sha256(payload.encode()).hexdigest()
+
+
+def lookup_key(title: str, author: str) -> str:
+    """Key for one catalog lookup, by the title and author as read (so a misread has its own entry)."""
+    return "shelfscan:lookup:" + hashlib.sha256(f"{CACHE_VERSION}|{_norm(title)}|{_norm(author)}".encode()).hexdigest()
 
 
 def series_key(books: Iterable[tuple[str, str]], *, model: str, prompt_version: str) -> str:

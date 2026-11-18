@@ -11,12 +11,17 @@ import httpx
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from pydantic import ValidationError
 
-from .cache import TTL_S, Cache, NullCache, SingleFlight, create_cache, recommendations_key, series_key
+from .cache import (
+    IDENTIFY_TTL_S, TTL_S, Cache, NullCache, SingleFlight, create_cache, identify_key, recommendations_key, series_key,
+)
 from .guard import suspicious_reason
 from .identity import merge_duplicates
 from .series import plan_gaps, verify_gaps
 from .catalog import Catalog, _authors_match, _titles_match, _volume_to_book, guess_language, volume_language
-from .llm import LLM, PROVIDER, RECOMMEND_PROMPT_VERSION, SERIES_PROMPT_VERSION, TEXT_MODEL, create_llm
+from .llm import (
+    IDENTIFY_PROMPT_FINGERPRINT, LLM, MODEL, PROVIDER, RECOMMEND_PROMPT_VERSION, SERIES_PROMPT_VERSION, TEXT_MODEL,
+    create_llm, identify_was_degraded,
+)
 from .models import (
     Book,
     BookRef,
@@ -48,6 +53,9 @@ APP_TOKEN = os.getenv("APP_TOKEN")  # optional shared secret the app sends as X-
 # What to do with a book the model read but the catalog has never heard of (a likely misread or invention):
 # "drop" leaves it out and says so in `notes`; "keep" returns it anyway.
 UNVERIFIED_POLICY = os.getenv("IDENTIFY_UNVERIFIED", "drop").strip().lower()
+# Bump when the guardrails or book matching change what /identify returns for the same photo (a prompt edit
+# is picked up automatically through IDENTIFY_PROMPT_FINGERPRINT).
+IDENTIFY_LOGIC_VERSION = "1"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("shelfscan")
@@ -71,6 +79,7 @@ async def lifespan(app: FastAPI):
     if not hasattr(state, "llm"):
         state.llm = create_llm()
     state.cache = create_cache()
+    state.catalog.cache = state.cache  # remembers catalog lookups too
     yield
     await state.cache.aclose()
     await state.http.aclose()
@@ -94,7 +103,7 @@ async def health():
 
 
 @app.post("/identify", response_model=IdentifyResponse, dependencies=[Depends(check_token)])
-async def identify(images: list[UploadFile] = File(...)):
+async def identify(response: Response, images: list[UploadFile] = File(...), refresh: bool = False):
     if not images or len(images) > MAX_IMAGES:
         raise HTTPException(400, f"Send 1-{MAX_IMAGES} images")
     payload: list[tuple[bytes, str]] = []
@@ -106,6 +115,42 @@ async def identify(images: list[UploadFile] = File(...)):
             raise HTTPException(413, "Image too large (max 5 MB); resize before upload")
         payload.append((data, img.content_type))
 
+    # The same photo (or a retry after the phone gave up) gets the stored answer instead of another model run.
+    key = identify_key(
+        (data for data, _ in payload), model=f"{PROVIDER}:{MODEL}",
+        prompt_version=f"{IDENTIFY_LOGIC_VERSION}:{IDENTIFY_PROMPT_FINGERPRINT}", policy=UNVERIFIED_POLICY,
+    )
+    if not refresh and (hit := await _cached_identify(key)):
+        response.headers["X-Cache"] = "HIT"
+        return hit
+
+    async with state.flight.lock(key):  # a retry that arrives while the first scan runs waits for it, then hits
+        if not refresh and (hit := await _cached_identify(key)):
+            response.headers["X-Cache"] = "HIT"
+            return hit
+        failures_before = state.catalog.failures
+        result = await _identify(payload)
+        # Never store a degraded read (cut-off reply, failed photo, catalog down) or an empty one: the user
+        # rescanning the same photo should get a fresh attempt, not the same bad answer.
+        if (result.books and not identify_was_degraded(result.notes) and state.catalog.failures == failures_before):
+            await state.cache.set(key, result.model_dump_json(), IDENTIFY_TTL_S)
+    response.headers["X-Cache"] = "BYPASS" if refresh else "MISS"
+    return result
+
+
+async def _cached_identify(key: str) -> IdentifyResponse | None:
+    raw = await state.cache.get(key)
+    if not raw:
+        return None
+    try:
+        return IdentifyResponse.model_validate_json(raw)
+    except ValidationError:
+        log.warning("Ignoring unreadable cache entry %s", key)
+        return None
+
+
+async def _identify(payload: list[tuple[bytes, str]]) -> IdentifyResponse:
+    """Read the photos with the model, then apply the guardrails and merge duplicates."""
     try:
         books, notes = await state.llm.identify(payload)
     except httpx.TimeoutException:

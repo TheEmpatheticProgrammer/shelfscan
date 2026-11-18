@@ -89,7 +89,7 @@ Google Books' largest image, else the app's own placeholder. Scanned titles are 
 are looked up again on launch, at most every three days each. Downloaded covers are kept in a 300 MB on-device cache,
 so they load instantly and offline. Set `SHELFSCAN_OPEN_LIBRARY=0` to use Google Books only.
 
-## Caching recommendations (Redis, optional)
+## Caching recommendations and photo reads (Redis, optional)
 
 `/recommendations` takes a model call plus a Google Books check per pick, and the answer rarely changes. Set `REDIS_URL`
 and the finished response is stored for a week; leave it unset and nothing is cached.
@@ -107,6 +107,18 @@ and the finished response is stored for a week; leave it unset and nothing is ca
 - Answers are not stored when the model call failed or Google Books was unreachable, so a degraded result is never kept.
 - If Redis is down or missing, requests work exactly as before.
 
+**Photo reads (`/identify`).** The same photo is read by the model once. The key is a hash of the exact photo bytes
+plus the model, the prompt and the guardrail version, so a rescan, or a retry after the phone gave up waiting, returns
+the stored books instantly (`X-Cache: HIT`). A retry that arrives while the first scan is still running waits for it
+and then gets the same answer. Pass `?refresh=true` to read the photo again. A result is not stored when it is empty,
+when the reply was cut off or a photo failed, or when Google Books couldn't be reached, so rescanning always gets a
+fresh attempt after a bad read. Editing a photo prompt invalidates stored reads automatically; bump
+`IDENTIFY_LOGIC_VERSION` in `main.py` when the guardrails or book matching change.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `IDENTIFY_CACHE_TTL_S` | 2592000 (30 days) | how long a photo's result is kept |
+
 Run Redis on Windows (pick one, and keep the data and installs on D:):
 - **Memurai Developer** (Windows-native, Redis-compatible): choose a folder on D: in the installer.
 - **Docker**: `docker run -d --name shelfscan-redis -p 6379:6379 redis:7-alpine`. Docker Desktop keeps its disk image on C: by
@@ -114,6 +126,16 @@ Run Redis on Windows (pick one, and keep the data and installs on D:):
 - **WSL2**: `sudo apt install redis-server && sudo service redis-server start`.
 
 Then `REDIS_URL=redis://localhost:6379/0` before starting the backend. Don't expose port 6379 beyond this PC.
+
+## When Google Books says "429 Too Many Requests"
+
+Google Books throttles heavily without an API key, and a 50-book scan makes many lookups. The backend copes in three ways:
+a 429 is retried with a short backoff; after three failed lookups in a row Google is left alone for a minute
+(`GOOGLE_BOOKS_COOLDOWN_S`) instead of being hit with hundreds of doomed requests; and while Google is refusing,
+books are checked against Open Library, so they are still verified and not just waved through. With Redis on, each
+title+author lookup is remembered (30 days when found, 6 hours when not), so a book is looked up once, not on every scan.
+For a real quota, create a free key: Google Cloud console > create a project > enable "Books API" > Credentials > API key,
+then set `GOOGLE_BOOKS_API_KEY`. The `notes` field only says books "couldn't be checked" when both catalogs are unreachable.
 
 ## Guardrails against made-up books
 
