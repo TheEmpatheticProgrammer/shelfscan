@@ -8,9 +8,17 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
-// Debug builds: server address and token from gradle.properties (a computer on the same Wi-Fi).
-val serverUrl = (project.findProperty("shelfscan.serverUrl") as String?) ?: "http://10.0.2.2:8000/"
-val appToken = (project.findProperty("shelfscan.appToken") as String?) ?: ""
+// Debug builds: server address and token. android/local.properties (git-ignored) wins over
+// gradle.properties, which is committed to a public repo, so keep the real token in local.properties.
+val localProps = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+fun devProp(name: String): String? =
+    localProps.getProperty(name)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: (project.findProperty(name) as String?)?.trim()?.takeIf { it.isNotEmpty() }
+val serverUrl = devProp("shelfscan.serverUrl") ?: "http://10.0.2.2:8000/"
+val appToken = devProp("shelfscan.appToken") ?: ""
 
 // Release builds: everything secret or deployment-specific comes from android/release.properties,
 // which is git-ignored. See release.properties.example and docs/RELEASE.md.

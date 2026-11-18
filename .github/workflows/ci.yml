@@ -1,0 +1,73 @@
+name: CI
+
+# Every PR and every push to main: server tests, app unit tests and debug build, and a release build
+# (signed with a throwaway key) so problems that only appear with R8 shrinking show up before an upload.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Server tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r requirements.txt pytest respx
+      - run: pytest -q
+
+  android:
+    name: App build and tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests and debug build
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+      - name: Throwaway release signing (CI only; real releases use your own key)
+        run: |
+          keytool -genkeypair -keystore "$RUNNER_TEMP/ci.jks" -alias ci -keyalg RSA -keysize 2048 -validity 1 \
+            -storepass cipassword -keypass cipassword -dname "CN=ShelfScan CI" -noprompt
+          cat > release.properties <<PROPS
+          storeFile=$RUNNER_TEMP/ci.jks
+          storePassword=cipassword
+          keyAlias=ci
+          keyPassword=cipassword
+          serverUrl=https://ci.invalid/
+          appToken=
+          PROPS
+
+      - name: Release build (R8)
+        run: ./gradlew --no-daemon bundleRelease assembleRelease
+
+      - name: Keep test reports when something fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports
+          path: android/app/build/reports
+          retention-days: 7

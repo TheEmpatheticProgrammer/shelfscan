@@ -70,7 +70,8 @@ Cloudflare (free plan is fine; buy one through Cloudflare if you don't have one)
 ### D. Build the app
 1. Create the upload key (step 1 below) and `android\release.properties` with
    `serverUrl=https://shelfscan.<your-domain>/` and `appToken=` the same value as the server's `APP_TOKEN`.
-2. Also put the token in `android\gradle.properties` (`shelfscan.appToken=`) so debug builds keep working.
+2. Also put the token in `android\local.properties` as `shelfscan.appToken=...` so debug builds keep working.
+   Not in `gradle.properties`: that file is committed, and this repo is public.
 3. Build, install on your phone and smoke test (step 2 below). This is exactly what testers will get.
 
 ### E. Play Console (after approval)
