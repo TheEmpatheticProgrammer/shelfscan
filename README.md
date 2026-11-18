@@ -127,6 +127,16 @@ Run Redis on Windows (pick one, and keep the data and installs on D:):
 
 Then `REDIS_URL=redis://localhost:6379/0` before starting the backend. Don't expose port 6379 beyond this PC.
 
+## When Google Books says "429 Too Many Requests"
+
+Google Books throttles heavily without an API key, and a 50-book scan makes many lookups. The backend copes in three ways:
+a 429 is retried with a short backoff; after three failed lookups in a row Google is left alone for a minute
+(`GOOGLE_BOOKS_COOLDOWN_S`) instead of being hit with hundreds of doomed requests; and while Google is refusing,
+books are checked against Open Library, so they are still verified and not just waved through. With Redis on, each
+title+author lookup is remembered (30 days when found, 6 hours when not), so a book is looked up once, not on every scan.
+For a real quota, create a free key: Google Cloud console > create a project > enable "Books API" > Credentials > API key,
+then set `GOOGLE_BOOKS_API_KEY`. The `notes` field only says books "couldn't be checked" when both catalogs are unreachable.
+
 ## Guardrails against made-up books
 
 A small vision model will sometimes "read" a book that isn't on the shelf, or report an author's name as a

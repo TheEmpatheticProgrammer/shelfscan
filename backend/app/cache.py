@@ -29,6 +29,9 @@ TTL_S = int(os.getenv("RECS_CACHE_TTL_S", str(7 * 24 * 3600)))  # "doesn't chang
 CACHE_VERSION = os.getenv("RECS_CACHE_VERSION", "1")
 # A photo's result depends only on its bytes, the model and the code, so it can be kept longer.
 IDENTIFY_TTL_S = int(os.getenv("IDENTIFY_CACHE_TTL_S", str(30 * 24 * 3600)))
+# Catalog lookups (is this title by this author a real book?) barely change, and each costs a rate-limited request.
+LOOKUP_TTL_S = int(os.getenv("LOOKUP_CACHE_TTL_S", str(30 * 24 * 3600)))
+LOOKUP_MISS_TTL_S = int(os.getenv("LOOKUP_MISS_TTL_S", str(6 * 3600)))  # "not found" is kept briefly: it may be a misread or a flaky answer
 SOCKET_TIMEOUT_S = float(os.getenv("REDIS_TIMEOUT_S", "0.25"))
 COOLDOWN_S = float(os.getenv("REDIS_COOLDOWN_S", "30"))
 
@@ -129,6 +132,11 @@ def identify_key(images: Iterable[bytes], *, model: str, prompt_version: str, po
     payload = json.dumps({"v": CACHE_VERSION, "p": prompt_version, "m": model, "policy": policy, "photos": photos},
                          separators=(",", ":"))
     return "shelfscan:identify:" + hashlib.sha256(payload.encode()).hexdigest()
+
+
+def lookup_key(title: str, author: str) -> str:
+    """Key for one catalog lookup, by the title and author as read (so a misread has its own entry)."""
+    return "shelfscan:lookup:" + hashlib.sha256(f"{CACHE_VERSION}|{_norm(title)}|{_norm(author)}".encode()).hexdigest()
 
 
 class SingleFlight:

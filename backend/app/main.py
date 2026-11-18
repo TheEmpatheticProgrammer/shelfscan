@@ -74,6 +74,7 @@ async def lifespan(app: FastAPI):
     if not hasattr(state, "llm"):
         state.llm = create_llm()
     state.cache = create_cache()
+    state.catalog.cache = state.cache  # remembers catalog lookups too
     yield
     await state.cache.aclose()
     await state.http.aclose()
