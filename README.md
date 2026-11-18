@@ -89,7 +89,7 @@ Google Books' largest image, else the app's own placeholder. Scanned titles are 
 are looked up again on launch, at most every three days each. Downloaded covers are kept in a 300 MB on-device cache,
 so they load instantly and offline. Set `SHELFSCAN_OPEN_LIBRARY=0` to use Google Books only.
 
-## Caching recommendations (Redis, optional)
+## Caching recommendations and photo reads (Redis, optional)
 
 `/recommendations` takes a model call plus a Google Books check per pick, and the answer rarely changes. Set `REDIS_URL`
 and the finished response is stored for a week; leave it unset and nothing is cached.
@@ -106,6 +106,18 @@ and the finished response is stored for a week; leave it unset and nothing is ca
 - Each response has an `X-Cache` header: `HIT`, `MISS` or `BYPASS`. Send `"refresh": true` in the body to force a new answer.
 - Answers are not stored when the model call failed or Google Books was unreachable, so a degraded result is never kept.
 - If Redis is down or missing, requests work exactly as before.
+
+**Photo reads (`/identify`).** The same photo is read by the model once. The key is a hash of the exact photo bytes
+plus the model, the prompt and the guardrail version, so a rescan, or a retry after the phone gave up waiting, returns
+the stored books instantly (`X-Cache: HIT`). A retry that arrives while the first scan is still running waits for it
+and then gets the same answer. Pass `?refresh=true` to read the photo again. A result is not stored when it is empty,
+when the reply was cut off or a photo failed, or when Google Books couldn't be reached, so rescanning always gets a
+fresh attempt after a bad read. Editing a photo prompt invalidates stored reads automatically; bump
+`IDENTIFY_LOGIC_VERSION` in `main.py` when the guardrails or book matching change.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `IDENTIFY_CACHE_TTL_S` | 2592000 (30 days) | how long a photo's result is kept |
 
 Run Redis on Windows (pick one, and keep the data and installs on D:):
 - **Memurai Developer** (Windows-native, Redis-compatible): choose a folder on D: in the installer.
