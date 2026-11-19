@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from .cache import (
@@ -18,6 +19,7 @@ from .guard import suspicious_reason
 from .identity import merge_duplicates
 from .series import plan_gaps, verify_gaps
 from .catalog import Catalog, _authors_match, _titles_match, _volume_to_book, guess_language, volume_language
+from .telemetry import MeteredLLM, MeteredTransport, Telemetry, TelemetryMiddleware, setup_logging, shutdown_logging
 from .llm import (
     IDENTIFY_PROMPT_FINGERPRINT, LLM, MODEL, PROVIDER, RECOMMEND_PROMPT_VERSION, SERIES_PROMPT_VERSION, TEXT_MODEL,
     create_llm, identify_was_degraded,
@@ -57,8 +59,13 @@ UNVERIFIED_POLICY = os.getenv("IDENTIFY_UNVERIFIED", "drop").strip().lower()
 # is picked up automatically through IDENTIFY_PROMPT_FINGERPRINT).
 IDENTIFY_LOGIC_VERSION = "1"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# Logs go to stdout: LOG_FORMAT=json in production (one object per line, with request_id), "text" in a terminal.
+# Metrics and logs also go to Grafana Cloud over OTLP when OTEL_EXPORTER_OTLP_ENDPOINT is set (app/telemetry.py).
+setup_logging(os.getenv("LOG_FORMAT", "text"), os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("shelfscan")
+telemetry = Telemetry()
+# /ready answers 503 once the model has failed this many calls in a row (5xx, 401/403, timeouts, refused connections).
+READY_FAILURE_THRESHOLD = int(os.getenv("READY_FAILURE_THRESHOLD", "3"))
 
 
 class State:
@@ -74,18 +81,21 @@ state = State()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    state.http = httpx.AsyncClient()
+    state.http = httpx.AsyncClient(transport=MeteredTransport(telemetry))  # Google Books, Open Library
     state.catalog = Catalog(state.http)
     if not hasattr(state, "llm"):
-        state.llm = create_llm()
+        state.llm = MeteredLLM(create_llm(), telemetry)
     state.cache = create_cache()
     state.catalog.cache = state.cache  # remembers catalog lookups too
     yield
     await state.cache.aclose()
     await state.http.aclose()
+    telemetry.shutdown()
+    shutdown_logging()
 
 
 app = FastAPI(title="Lecter", lifespan=lifespan)
+app.add_middleware(TelemetryMiddleware, telemetry=telemetry)
 
 
 def check_token(x_app_token: str | None = Header(default=None)):
@@ -99,7 +109,35 @@ def _key(title: str, author: str) -> str:
 
 @app.get("/health")
 async def health():
+    """Liveness: the process answers. Restart it if this fails. Checks nothing else on purpose."""
     return {"ok": True}
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness, for the uptime check: 503 when the model is failing, since no scan can work without it.
+
+    Dependencies are judged from real traffic (failures in a row), never by calling the model: a probe every minute
+    would cost money. Google Books, Open Library and Redis are reported too, but the app still works without them
+    (Open Library stands in for Google Books; without Redis nothing is cached), so they don't fail the check.
+    """
+    checks: dict[str, str] = {}
+    for dep in ("llm", "google_books", "open_library"):
+        n = telemetry.failures_in_a_row.get(dep, 0)
+        checks[dep] = f"failing: {n} errors in a row" if n >= READY_FAILURE_THRESHOLD else "ok"
+    ping = getattr(state.cache, "ping", None)
+    if ping is None:
+        checks["cache"] = "disabled"
+    else:
+        try:
+            await ping()
+            checks["cache"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            checks["cache"] = f"failing: {type(exc).__name__}"
+    ok = not checks["llm"].startswith("failing")
+    degraded = any(v.startswith("failing") for v in checks.values())
+    body = {"status": "ok" if not degraded else ("degraded" if ok else "down"), "checks": checks}
+    return JSONResponse(body, status_code=200 if ok else 503)
 
 
 @app.post("/identify", response_model=IdentifyResponse, dependencies=[Depends(check_token)])
