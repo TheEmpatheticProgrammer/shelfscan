@@ -48,9 +48,9 @@ android {
     defaultConfig {
         applicationId = "com.lecter.app"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         // Bump versionCode by 1 for every upload to Google Play (it must always increase).
-        versionCode = 1
+        versionCode = 2
         versionName = "0.1.0"
         buildConfigField("String", "SERVER_URL", "\"$serverUrl\"")
         buildConfigField("String", "APP_TOKEN", "\"$appToken\"")
