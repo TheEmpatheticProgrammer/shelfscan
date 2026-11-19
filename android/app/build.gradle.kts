@@ -46,7 +46,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.shelfscan.app"
+        applicationId = "com.lecter.app"
         minSdk = 26
         targetSdk = 35
         // Bump versionCode by 1 for every upload to Google Play (it must always increase).

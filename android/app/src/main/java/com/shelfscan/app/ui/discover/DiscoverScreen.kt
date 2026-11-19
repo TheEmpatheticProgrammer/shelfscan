@@ -159,7 +159,7 @@ fun DiscoverScreen(
         if (state.libraryEmpty) {
             EmptyState(
                 title = "Nothing to go on yet",
-                body = "Add a few books to your library and ShelfScan will suggest what to read next and flag new releases from your authors.",
+                body = "Add a few books to your library and Lecter will suggest what to read next and flag new releases from your authors.",
                 action = "Scan my books",
                 onAction = onScan,
             )

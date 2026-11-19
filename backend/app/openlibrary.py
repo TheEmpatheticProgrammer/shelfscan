@@ -19,7 +19,7 @@ SEARCH_URL = "https://openlibrary.org/search.json"
 WORK_URL = "https://openlibrary.org{key}.json"
 COVER_URL = "https://covers.openlibrary.org/b/id/{id}-{size}.jpg"
 # Open Library asks API clients to identify themselves.
-HEADERS = {"User-Agent": "ShelfScan/0.1 (personal book-library app)"}
+HEADERS = {"User-Agent": "Lecter/0.1 (personal book-library app)"}
 
 
 # The edition Open Library matched within each work (with an ISBN query, that ISBN's edition).

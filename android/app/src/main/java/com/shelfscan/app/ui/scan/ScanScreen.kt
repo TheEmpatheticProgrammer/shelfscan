@@ -309,7 +309,7 @@ private fun Queued(photoCount: Int, onScanMore: () -> Unit, onDone: () -> Unit) 
         Text("Saved for later", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Can't reach the ShelfScan server right now. Your ${if (photoCount == 1) "photo is" else "$photoCount photos are"} " +
+            "Can't reach the Lecter server right now. Your ${if (photoCount == 1) "photo is" else "$photoCount photos are"} " +
                 "saved and will be read automatically once it's back. They'll wait here under Add books for you to review.",
             textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

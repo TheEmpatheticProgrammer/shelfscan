@@ -215,7 +215,7 @@ class BookRepository(
         val text = context.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
             ?: error("Couldn't open that file")
         val export = runCatching { backupJson.decodeFromString(LibraryExport.serializer(), text) }.getOrNull()
-        if (export == null || export.format != LibraryExport.FORMAT) error("That isn't a ShelfScan library file")
+        if (export == null || export.format != LibraryExport.FORMAT) error("That isn't a Lecter library file")
         val books = export.books.filter { it.title.isNotBlank() && it.author.isNotBlank() }.map { it.toBook() }
         val addedBooks = dao.insertAll(books).count { it != -1L }
         val owned = dao.allKeys().toSet()

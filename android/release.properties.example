@@ -2,12 +2,12 @@
 # Use forward slashes in paths, even on Windows.
 
 # Upload key for Google Play (create it once; see docs/RELEASE.md). Keep the .jks and passwords backed up.
-storeFile=D:/keys/shelfscan-upload.jks
+storeFile=D:/keys/shelfsight-upload.jks
 storePassword=
-keyAlias=shelfscan-upload
+keyAlias=shelfsight-upload
 keyPassword=
 
-# The ShelfScan server the released app talks to. Must be HTTPS and end with a slash.
-serverUrl=https://shelfscan.example.com/
+# The Lecter server the released app talks to. Must be HTTPS and end with a slash.
+serverUrl=https://shelfsight.example.com/
 # Must match APP_TOKEN on that server (leave empty only if the server has none).
 appToken=

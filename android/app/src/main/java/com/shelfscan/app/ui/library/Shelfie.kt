@@ -129,7 +129,7 @@ private suspend fun share(context: Context, bitmap: Bitmap, stats: ShelfStats) {
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "image/png"
         putExtra(Intent.EXTRA_STREAM, uri)
-        putExtra(Intent.EXTRA_TEXT, "${stats.headline}. Scanned with ShelfScan.")
+        putExtra(Intent.EXTRA_TEXT, "${stats.headline}. Scanned with Lecter.")
         clipData = ClipData.newRawUri(null, uri) // lets the share sheet show a preview of the image
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
@@ -185,8 +185,8 @@ object ShelfieCard {
         stats.topAuthor?.let {
             text(canvas, "Most on the shelf: $it (${stats.topAuthorCount})", PAD, 1246f, 32f, serif, withAlpha(PAPER, 0.8f), usable)
         }
-        text(canvas, "ShelfScan", PAD, 1300f, 30f, serifBold, BRASS, usable)
-        val brandWidth = paint(30f, serifBold, BRASS).measureText("ShelfScan")
+        text(canvas, "Lecter", PAD, 1300f, 30f, serifBold, BRASS, usable)
+        val brandWidth = paint(30f, serifBold, BRASS).measureText("Lecter")
         text(canvas, "  ·  scan your shelf", PAD + brandWidth, 1300f, 28f, serif, withAlpha(PAPER, 0.6f), usable - brandWidth)
         return bitmap
     }

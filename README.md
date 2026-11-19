@@ -1,4 +1,4 @@
-# ShelfScan
+# Lecter
 
 An Android app that turns photos of your physical books into a searchable digital library, then suggests what to read next and flags upcoming releases from authors you own.
 

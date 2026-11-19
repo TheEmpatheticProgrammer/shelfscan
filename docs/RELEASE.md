@@ -1,7 +1,7 @@
-# Releasing ShelfScan
+# Releasing Lecter
 
 Goal: a signed build on Google Play's **internal testing** track, so a few people (your PM partner first) install
-ShelfScan from the Play Store link without Android Studio.
+Lecter from the Play Store link without Android Studio.
 
 Internal testing has no prerequisites. Publishing to everyone later does: a **personal** developer account created
 after 13 Nov 2023 must first run a **closed test with at least 12 testers opted in for 14 consecutive days**
@@ -44,20 +44,20 @@ Cloudflare (free plan is fine; buy one through Cloudflare if you don't have one)
 2. In PowerShell:
    ```powershell
    cloudflared tunnel login                         # opens a browser; pick your domain
-   cloudflared tunnel create shelfscan
-   cloudflared tunnel route dns shelfscan shelfscan.<your-domain>
+   cloudflared tunnel create shelfsight
+   cloudflared tunnel route dns shelfsight shelfsight.<your-domain>
    ```
 3. Create `%USERPROFILE%\.cloudflared\config.yml` (the `create` command printed the credentials file path):
    ```yaml
-   tunnel: shelfscan
+   tunnel: shelfsight
    credentials-file: C:\Users\<you>\.cloudflared\<tunnel-id>.json
    ingress:
-     - hostname: shelfscan.<your-domain>
+     - hostname: shelfsight.<your-domain>
        service: http://localhost:8001
      - service: http_status:404
    ```
-   Only the ShelfScan server (8001) is exposed. Never point the tunnel at the gateway (8000) or Redis.
-4. Run it: `cloudflared tunnel run shelfscan` (leave that window open). To have it start with Windows, follow
+   Only the Lecter server (8001) is exposed. Never point the tunnel at the gateway (8000) or Redis.
+4. Run it: `cloudflared tunnel run shelfsight` (leave that window open). To have it start with Windows, follow
    Cloudflare's "run as a service on Windows" instructions: the service runs as the system account and doesn't read
    the config from your user folder, so it needs its own copy.
 
@@ -65,21 +65,21 @@ Cloudflare (free plan is fine; buy one through Cloudflare if you don't have one)
 1. `backend\.env`: copy `.env.example` and fill it in. Set a long random **`APP_TOKEN`** (e.g. the output of
    `[guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N")` in PowerShell).
 2. Start, in this order: the gateway (port 8000), Redis (optional), then `backend\start-server.ps1`.
-3. Check from your phone **on mobile data**: `https://shelfscan.<your-domain>/health` should show `{"ok":true}`.
+3. Check from your phone **on mobile data**: `https://shelfsight.<your-domain>/health` should show `{"ok":true}`.
 
 ### D. Build the app
 1. Create the upload key (step 1 below) and `android\release.properties` with
-   `serverUrl=https://shelfscan.<your-domain>/` and `appToken=` the same value as the server's `APP_TOKEN`.
+   `serverUrl=https://shelfsight.<your-domain>/` and `appToken=` the same value as the server's `APP_TOKEN`.
 2. Also put the token in `android\local.properties` as `shelfscan.appToken=...` so debug builds keep working.
    Not in `gradle.properties`: that file is committed, and this repo is public.
 3. Build, install on your phone and smoke test (step 2 below). This is exactly what testers will get.
 
 ### E. Play Console (after approval)
-1. **Create app**: name ShelfScan, App, Free.
+1. **Create app**: name Lecter, App, Free.
 2. **Testing → Internal testing → Testers**: create an email list (you and your PM partner), save.
 3. **Create new release**: upload `app-release.aab`, add release notes, roll out. If the dashboard lists setup
    tasks it needs first (e.g. privacy policy, app access, ads, content rating), complete them using section 3.
-4. Copy the **opt-in link** from the Testers tab and send it to testers. They accept, then install ShelfScan from
+4. Copy the **opt-in link** from the Testers tab and send it to testers. They accept, then install Lecter from
    the Play Store; later releases arrive as normal updates.
 
 Your PC must be on, with the gateway, server and tunnel running, whenever testers use the app.
@@ -89,15 +89,15 @@ Your PC must be on, with the gateway, server and tunnel running, whenever tester
 1. **Upload key.** Use the `keytool` that ships with Android Studio (in its `jbr\bin` folder):
    ```powershell
    mkdir D:\keys
-   & "<Android Studio folder>\jbr\bin\keytool.exe" -genkeypair -v -keystore D:\keys\shelfscan-upload.jks `
-     -alias shelfscan-upload -keyalg RSA -keysize 2048 -validity 10000
+   & "<Android Studio folder>\jbr\bin\keytool.exe" -genkeypair -v -keystore D:\keys\shelfsight-upload.jks `
+     -alias shelfsight-upload -keyalg RSA -keysize 2048 -validity 10000
    ```
    Back up the `.jks` file and its password somewhere safe (a password manager). With Play App Signing, Google holds
    the real signing key and a lost upload key can be reset, but it's slow.
 2. **`android/release.properties`**: copy `android/release.properties.example`, fill in the key details and the HTTPS
    `serverUrl` from step 0. It's git-ignored: never commit it.
 3. **Play Console**: create a developer account (one-time fee, identity verification), then **Create app** →
-   ShelfScan, App, Free. Accept the developer policies.
+   Lecter, App, Free. Accept the developer policies.
 
 ## 2. Every release
 

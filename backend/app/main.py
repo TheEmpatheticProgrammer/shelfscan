@@ -1,4 +1,4 @@
-"""ShelfScan backend: a thin proxy between the Android app, Claude, and Google Books."""
+"""Lecter backend: a thin proxy between the Android app, Claude, and Google Books."""
 from __future__ import annotations
 
 import asyncio
@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
     await state.http.aclose()
 
 
-app = FastAPI(title="ShelfScan", lifespan=lifespan)
+app = FastAPI(title="Lecter", lifespan=lifespan)
 
 
 def check_token(x_app_token: str | None = Header(default=None)):
