@@ -1,7 +1,7 @@
 # Play Store listing (draft)
 
 **App name** (30 chars max)
-Shelfsight: Bookshelf Scanner
+Lecter: Bookshelf Scanner
 
 **Short description** (80 chars max)
 Photograph your shelves to catalog your books, then see what to read next.
@@ -11,7 +11,7 @@ Photograph your shelves to catalog your books, then see what to read next.
 Turn the books on your shelves into a library you can search, sort and carry with you.
 
 **Scan your shelves**
-Take a photo of a row of spines or a stack of covers, and Shelfsight reads every title it can see. Check the list,
+Take a photo of a row of spines or a stack of covers, and Lecter reads every title it can see. Check the list,
 fix anything misread, and add them in one go. For a single book, scan its barcode or type its title.
 
 **A library that looks like one**

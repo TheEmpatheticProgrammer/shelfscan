@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Starts the Shelfsight server with the settings in backend\.env.
+  Starts the Lecter server with the settings in backend\.env.
 
 .DESCRIPTION
   Reads KEY=VALUE lines from backend\.env (git-ignored; start from .env.example), sets them for this
@@ -46,5 +46,5 @@ if (-not (Test-Path $python)) {
 }
 
 $bindHost = if ($LocalOnly) { "127.0.0.1" } else { "0.0.0.0" }
-Write-Host "Shelfsight server on http://${bindHost}:$Port  (model: $env:LLM_MODEL via $env:LLM_BASE_URL)"
+Write-Host "Lecter server on http://${bindHost}:$Port  (model: $env:LLM_MODEL via $env:LLM_BASE_URL)"
 & $python -m uvicorn app.main:app --host $bindHost --port $Port

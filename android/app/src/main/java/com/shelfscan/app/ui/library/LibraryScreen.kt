@@ -149,7 +149,7 @@ fun LibraryScreen(
                     onSort = vm::setSort,
                     onFilter = vm::setFilter,
                     onShare = { sharing = true },
-                    onExport = { exporter.launch("shelfsight-library-${LocalDate.now()}.json") },
+                    onExport = { exporter.launch("lecter-library-${LocalDate.now()}.json") },
                     // Some file managers label .json files as plain text or generic binary.
                     onImport = { importer.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
                 )
