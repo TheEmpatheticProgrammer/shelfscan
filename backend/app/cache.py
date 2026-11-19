@@ -87,6 +87,10 @@ class RedisCache:
         except Exception as exc:
             self._failed("set", exc)
 
+    async def ping(self) -> None:
+        """For /ready. Raises when Redis doesn't answer (timeouts come from REDIS_TIMEOUT_S)."""
+        await self._r.ping()
+
     async def aclose(self) -> None:
         try:
             await self._r.aclose()

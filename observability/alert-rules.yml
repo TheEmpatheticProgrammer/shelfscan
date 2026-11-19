@@ -1,0 +1,63 @@
+# Prometheus-style alert rules for the ShelfScan backend, for Grafana Cloud's metrics (Mimir) ruler.
+# Load with:  mimirtool rules load observability/alert-rules.yml  (see docs/observability.md)
+# Thresholds are starting points: tune them after a week of real traffic.
+namespace: shelfscan
+groups:
+  - name: shelfscan
+    rules:
+      # Failures as the app sees them. Probes are left out: /ready answers 503 on purpose.
+      - alert: ShelfScanErrorRateHigh
+        expr: |
+          sum by (job) (rate(http_server_request_duration_seconds_count{job=~".*shelfscan", http_response_status_code=~"5..", http_route!~"/health|/ready"}[5m]))
+            / sum by (job) (rate(http_server_request_duration_seconds_count{job=~".*shelfscan", http_route!~"/health|/ready"}[5m]))
+            > 0.02
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.job }}: more than 2% of requests are failing with 5xx"
+
+      # The model (Anthropic, or the gateway) is failing: no scan or recommendation can work.
+      - alert: ShelfScanModelFailing
+        expr: |
+          sum by (job) (rate(shelfscan_dependency_duration_seconds_count{dependency="llm", outcome=~"5..|401|403|timeout|connect_error|error"}[10m]))
+            / sum by (job) (rate(shelfscan_dependency_duration_seconds_count{dependency="llm"}[10m]))
+            > 0.1
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.job }}: {{ $value | humanizePercentage }} of model calls are failing"
+
+      # The catalog is failing. The app falls back to Open Library, so books still resolve, but worse.
+      - alert: ShelfScanCatalogFailing
+        expr: |
+          sum by (job, dependency) (rate(shelfscan_dependency_duration_seconds_count{dependency=~"google_books|open_library", outcome=~"5..|401|403|timeout|connect_error|error"}[15m]))
+            / sum by (job, dependency) (rate(shelfscan_dependency_duration_seconds_count{dependency=~"google_books|open_library"}[15m]))
+            > 0.25
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "{{ $labels.job }}: {{ $labels.dependency }} fails {{ $value | humanizePercentage }} of lookups"
+
+      # Google Books is refusing for quota: lookups are slowed by retries and fall back to Open Library.
+      - alert: ShelfScanGoogleBooksRateLimited
+        expr: sum by (job) (rate(shelfscan_dependency_duration_seconds_count{dependency="google_books", outcome="429"}[15m])) > 0.05
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "{{ $labels.job }}: Google Books keeps answering 429; check the API key's quota"
+
+      - alert: ShelfScanIdentifySlow
+        expr: |
+          histogram_quantile(0.95, sum by (job, le) (rate(http_server_request_duration_seconds_bucket{job=~".*shelfscan", http_route="/identify", http_response_status_code="200"}[15m])))
+            > 90
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "{{ $labels.job }}: p95 for /identify is {{ $value | humanizeDuration }}"
+
+      - alert: ShelfScanMetricsAbsent
+        expr: absent_over_time(http_server_request_duration_seconds_count{job=~".*shelfscan"}[10m])
+        for: 5m
+        labels: {severity: page}
+        annotations:
+          summary: "No ShelfScan backend metrics for 15 minutes"
